@@ -40,27 +40,6 @@ std::string StringField(const base::DictValue& dict, std::string_view name) {
   return value ? *value : std::string();
 }
 
-// "20260910201354" as a time. Returns the epoch for anything that is not 14
-// digits, which sorts such an entry furthest from any sensible request rather
-// than nearest to it.
-base::Time ParseIndexTimestamp(std::string_view timestamp) {
-  base::Time::Exploded exploded = {};
-  if (timestamp.size() != 14 ||
-      !base::StringToInt(timestamp.substr(0, 4), &exploded.year) ||
-      !base::StringToInt(timestamp.substr(4, 2), &exploded.month) ||
-      !base::StringToInt(timestamp.substr(6, 2), &exploded.day_of_month) ||
-      !base::StringToInt(timestamp.substr(8, 2), &exploded.hour) ||
-      !base::StringToInt(timestamp.substr(10, 2), &exploded.minute) ||
-      !base::StringToInt(timestamp.substr(12, 2), &exploded.second)) {
-    return base::Time();
-  }
-  base::Time parsed;
-  if (!base::Time::FromUTCExploded(exploded, &parsed)) {
-    return base::Time();
-  }
-  return parsed;
-}
-
 // The query of a key, as the terms a closest capture is judged by. The method
 // is not one of them: it decides which captures are in the running at all.
 struct KeyQuery {
@@ -108,6 +87,24 @@ int Agreement(const KeyQuery& wanted, const KeyQuery& candidate) {
 }
 
 }  // namespace
+
+base::Time ParseIndexTimestamp(std::string_view timestamp) {
+  base::Time::Exploded exploded = {};
+  if (timestamp.size() != 14 ||
+      !base::StringToInt(timestamp.substr(0, 4), &exploded.year) ||
+      !base::StringToInt(timestamp.substr(4, 2), &exploded.month) ||
+      !base::StringToInt(timestamp.substr(6, 2), &exploded.day_of_month) ||
+      !base::StringToInt(timestamp.substr(8, 2), &exploded.hour) ||
+      !base::StringToInt(timestamp.substr(10, 2), &exploded.minute) ||
+      !base::StringToInt(timestamp.substr(12, 2), &exploded.second)) {
+    return base::Time();
+  }
+  base::Time parsed;
+  if (!base::Time::FromUTCExploded(exploded, &parsed)) {
+    return base::Time();
+  }
+  return parsed;
+}
 
 CdxjEntry::CdxjEntry() = default;
 CdxjEntry::CdxjEntry(const CdxjEntry&) = default;

@@ -14,6 +14,7 @@
 
 #include "base/containers/span.h"
 #include "base/functional/function_ref.h"
+#include "base/time/time.h"
 
 namespace warc {
 
@@ -59,6 +60,11 @@ struct CdxjEntry {
   std::string mime;
   std::string digest;
 };
+
+// "20260910201354" -- an index's capture time -- as a time. Returns the null
+// time for anything that is not 14 digits of a real date, which sorts such an
+// entry furthest from any sensible request rather than nearest to it.
+base::Time ParseIndexTimestamp(std::string_view timestamp);
 
 // Parses one line. Returns nullopt for a line that is not an entry, including
 // the "!meta" line that heads a secondary index.

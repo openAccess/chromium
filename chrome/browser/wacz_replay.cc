@@ -26,6 +26,7 @@
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/common/chrome_switches.h"
+#include "components/warc/cdxj.h"
 #include "components/warc/wacz_collection.h"
 #include "components/warc/wacz_url_loader_factory.h"
 #include "content/public/browser/navigation_controller.h"
@@ -34,6 +35,7 @@
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/content_switches.h"
 #include "crypto/hash.h"
 #include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
@@ -198,6 +200,32 @@ std::string ReplayMoment(const content::StoragePartitionConfig& config) {
   const size_t separator = name.find(kMomentSeparator);
   return separator == std::string::npos ? std::string()
                                         : name.substr(separator + 1);
+}
+
+std::optional<base::Time> ReplayClockStart(
+    const content::StoragePartitionConfig& config) {
+  const std::string moment = ReplayMoment(config);
+  if (moment.empty()) {
+    return std::nullopt;
+  }
+  const base::Time start = warc::ParseIndexTimestamp(moment);
+  if (start.is_null()) {
+    return std::nullopt;
+  }
+  return start;
+}
+
+void AppendRendererSwitches(content::RenderProcessHost& process,
+                            base::CommandLine& command_line) {
+  const std::optional<base::Time> start =
+      ReplayClockStart(process.GetStoragePartition()->GetConfig());
+  if (!start) {
+    return;
+  }
+  command_line.AppendSwitchASCII(
+      switches::kRendererClockStart,
+      base::NumberToString(
+          (*start - base::Time::UnixEpoch()).InMilliseconds()));
 }
 
 bool ServesFromArchive(content::RenderFrameHost* frame, int render_process_id) {

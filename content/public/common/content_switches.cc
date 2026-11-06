@@ -604,6 +604,12 @@ const char kRemoteAllowOrigins[] = "remote-allow-origins";
 
 const char kRendererClientId[] = "renderer-client-id";
 
+// Starts the renderer's wall clock at this time, in milliseconds since the Unix
+// epoch, running on from there at the real clock's pace. Only base::Time moves;
+// TimeTicks do not. Set by the embedder for a renderer that should see the web
+// as it stood at some earlier moment.
+const char kRendererClockStart[] = "renderer-clock-start";
+
 // The contents of this flag are prepended to the renderer command line.
 // Useful values might be "valgrind" or "xterm -e gdb --args".
 const char kRendererCmdPrefix[]             = "renderer-cmd-prefix";

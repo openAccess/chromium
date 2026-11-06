@@ -20,6 +20,7 @@
 #include "base/message_loop/message_pump_type.h"
 #include "base/message_loop/message_pump_wakeup_counter.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
 #include "base/pending_task.h"
 #include "base/process/current_process.h"
 #include "base/run_loop.h"
@@ -49,6 +50,7 @@
 #include "content/renderer/memory_coordinator/last_resort_gc_policy.h"
 #include "content/renderer/render_process_impl.h"
 #include "content/renderer/render_thread_impl.h"
+#include "content/renderer/renderer_clock.h"
 #include "content/renderer/renderer_main_platform_delegate.h"
 #include "media/media_buildflags.h"
 #include "mojo/public/cpp/bindings/direct_receiver.h"
@@ -156,6 +158,12 @@ int RendererMain(MainFunctionParams parameters) {
       base::CurrentProcessType::PROCESS_RENDERER);
 
   const base::CommandLine& command_line = *parameters.command_line;
+
+  // First, so that nothing in this process reads the real wall clock where it
+  // was told to read another. The override is the process's for its life.
+  static base::NoDestructor<
+      std::unique_ptr<base::subtle::ScopedTimeClockOverrides>>
+      clock_override(StartClockFromCommandLine(command_line));
 
 #if BUILDFLAG(IS_MAC)
   base::apple::ScopedNSAutoreleasePool* pool = parameters.autorelease_pool;

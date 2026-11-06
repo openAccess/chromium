@@ -3166,6 +3166,7 @@ void ChromeContentBrowserClient::AppendExtraCommandLineSwitches(
       for (auto& part : extra_parts_) {
         part->AppendExtraRendererCommandLineSwitches(command_line, *process);
       }
+      wacz_replay::AppendRendererSwitches(*process, *command_line);
     }
 
 #if BUILDFLAG(IS_CHROMEOS)

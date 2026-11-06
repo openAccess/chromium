@@ -172,6 +172,7 @@ CONTENT_EXPORT extern const char kRemoteDebuggingPipe[];
 CONTENT_EXPORT extern const char kRemoteDebuggingPort[];
 CONTENT_EXPORT extern const char kRemoteAllowOrigins[];
 CONTENT_EXPORT extern const char kRendererClientId[];
+CONTENT_EXPORT extern const char kRendererClockStart[];
 extern const char kRendererCmdPrefix[];
 CONTENT_EXPORT extern const char kRendererProcess[];
 CONTENT_EXPORT extern const char kRendererProcessLaunchTimeTicks[];

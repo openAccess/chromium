@@ -5,9 +5,11 @@
 #ifndef CHROME_BROWSER_WACZ_REPLAY_H_
 #define CHROME_BROWSER_WACZ_REPLAY_H_
 
+#include <optional>
 #include <string>
 #include <vector>
 
+#include "base/time/time.h"
 #include "chrome/browser/wacz_replay/replay_partition.h"
 #include "content/public/browser/storage_partition_config.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
@@ -17,9 +19,14 @@
 
 class BrowserWindowInterface;
 
+namespace base {
+class CommandLine;
+}  // namespace base
+
 namespace content {
 class BrowserContext;
 class RenderFrameHost;
+class RenderProcessHost;
 }  // namespace content
 
 namespace wacz_replay {
@@ -68,6 +75,31 @@ content::StoragePartitionConfig ReplayPartition(
 // ReplayPartition(). Empty for the earliest capture, or for a partition that
 // is not a replay partition at all.
 std::string ReplayMoment(const content::StoragePartitionConfig& config);
+
+// The time a renderer in `config`'s partition starts its clock at: the
+// partition's moment, or nothing for a partition that has none -- one replaying
+// the earliest capture of everything, which is no single time, or one that is
+// not a replay partition at all.
+//
+// A replayed page reads the clock as it did when it was captured, because it
+// was written against that clock. A page that caches what it fetched and
+// treats it as fresh for five minutes, read on today's clock, finds every
+// entry stale and asks again for what the capture never needed to fetch --
+// every one a miss. Started at its moment, the page agrees with itself.
+std::optional<base::Time> ReplayClockStart(
+    const content::StoragePartitionConfig& config);
+
+// Adds what a renderer for `process` needs to be told before it starts: for a
+// renderer in a replay partition, the time its clock starts at.
+//
+// The renderer moves its own wall clock, before it runs any script and for
+// every frame and worker in it, which a process can do because it serves a
+// single partition and so a single moment. Each renderer starts at the moment
+// when it starts, as a page in a replay tool does when it loads, so a site
+// opened later in a tab starts at its moment rather than however long after
+// it the tab was opened.
+void AppendRendererSwitches(content::RenderProcessHost& process,
+                            base::CommandLine& command_line);
 
 // Whether what this frame asks for is answered out of an archive. `frame` is
 // null for a worker, which belongs to a process instead; either way the

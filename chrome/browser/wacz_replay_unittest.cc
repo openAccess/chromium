@@ -112,6 +112,28 @@ TEST_F(WaczReplayTest, APartitionKnowsItsMoment) {
                     /*in_memory=*/true)));
 }
 
+// A replay renderer's clock starts at its partition's moment, so a page reads
+// the time it was captured at.
+TEST_F(WaczReplayTest, AReplayClockStartsAtTheMoment) {
+  Replay("/tmp/capture.wacz");
+  // 2026-10-30 22:56:29 UTC.
+  const base::Time moment = base::Time::UnixEpoch() + base::Seconds(1793400989);
+  EXPECT_EQ(moment, ReplayClockStart(
+                        ReplayPartition(&profile_, "2026-10-30T22:56:29Z")));
+  EXPECT_EQ(moment,
+            ReplayClockStart(ReplayPartition(&profile_, "20261030225629")));
+  // The earliest capture of everything is no one time, so its clock is the
+  // real one; and nothing outside a replay partition has its clock moved.
+  EXPECT_EQ(std::nullopt, ReplayClockStart(ReplayPartition(&profile_, "")));
+  EXPECT_EQ(std::nullopt,
+            ReplayClockStart(
+                content::StoragePartitionConfig::CreateDefault(&profile_)));
+  EXPECT_EQ(std::nullopt,
+            ReplayClockStart(content::StoragePartitionConfig::Create(
+                &profile_, "someextensionid", "ab-20261030225629",
+                /*in_memory=*/true)));
+}
+
 // Two archives are two captures, and what one stored is no more the other's
 // than a live site's would be.
 TEST_F(WaczReplayTest, TwoArchivesAreTwoPartitions) {
