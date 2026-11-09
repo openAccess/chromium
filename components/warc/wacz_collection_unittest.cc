@@ -295,6 +295,31 @@ TEST_F(WaczCollectionTest, ABodyInAnEncodingWeCannotDecodeIsNotServed) {
           .has_value());
 }
 
+TEST_F(WaczCollectionTest, AUrlSharingItsKeyIsAnsweredWithItsOwnCapture) {
+  // SURT files both under "org,example)/", and the site sent the browser from
+  // one to the other in the same second. Each must get its own answer: the
+  // redirect for the second would send the page back to it without end.
+  AddResponse("https://example.org/", "20260101120000",
+              "HTTP/1.1 301 Moved Permanently\r\n"
+              "Location: https://www.example.org/\r\n\r\n",
+              "");
+  AddResponse("https://www.example.org/", "20260101120000",
+              "HTTP/1.1 200 OK\r\n\r\n", "the page");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  std::optional<ArchivedResponse> page =
+      collection->Lookup(GURL("https://www.example.org/"), "20260101120000");
+  ASSERT_TRUE(page.has_value());
+  EXPECT_EQ(200, page->headers->response_code());
+  EXPECT_EQ("the page", ToString(page->body));
+
+  std::optional<ArchivedResponse> redirect =
+      collection->Lookup(GURL("https://example.org/"), "20260101120000");
+  ASSERT_TRUE(redirect.has_value());
+  EXPECT_EQ(301, redirect->headers->response_code());
+}
+
 TEST_F(WaczCollectionTest, FindsARecordHoweverTheUrlIsWritten) {
   AddResponse("https://example.org/a?b=2&a=1", "20260101120000",
               "HTTP/1.1 200 OK\r\n\r\n", "body");

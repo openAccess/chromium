@@ -418,14 +418,30 @@ std::optional<ArchivedResponse> WaczCollection::Lookup(
   // them -- fetched after them, so a moment near the page is nearer the parts.
   // The whole can answer any request for the resource, ranged or not; a part
   // answers only the request that was made for it.
+  //
+  // And within either, a capture of the very URL asked for over one of another
+  // URL filed under the same key. SURT drops the scheme and a leading "www.",
+  // so "https://nytimes.com/" and "https://www.nytimes.com/" share a key -- and
+  // the first redirects to the second, often within the same second. Answering
+  // the second with the first's redirect sends the page back to the second
+  // forever.
   const std::string moment = ToIndexTimestamp(timestamp);
+  const std::string& asked_for = request.url.spec();
   const auto whole = [](const CdxjEntry& capture) {
     return capture.status != "206";
+  };
+  const auto whole_of_this_url = [&](const CdxjEntry& capture) {
+    return whole(capture) && capture.url == asked_for;
+  };
+  const auto any_of_this_url = [&](const CdxjEntry& capture) {
+    return capture.url == asked_for;
   };
   const auto any = [](const CdxjEntry&) { return true; };
   for (const std::string& key : keys) {
     for (const CdxjEntry* entry :
-         {FindNearestCapture(index_, key, moment, whole),
+         {FindNearestCapture(index_, key, moment, whole_of_this_url),
+          FindNearestCapture(index_, key, moment, whole),
+          FindNearestCapture(index_, key, moment, any_of_this_url),
           FindNearestCapture(index_, key, moment, any)}) {
       if (entry) {
         return Read(*entry);
