@@ -9,6 +9,7 @@
 
 #include "base/task/single_thread_task_runner.h"
 #include "content/child/child_thread_impl.h"
+#include "content/renderer/renderer_clock.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "third_party/blink/public/mojom/service_worker/embedded_worker.mojom.h"
@@ -83,6 +84,10 @@ class EmbeddedWorkerInstanceClientImpl
 
   // nullptr means worker is not running.
   std::unique_ptr<ServiceWorkerContextClient> service_worker_context_client_;
+
+  // A service worker is no document's, so the clock is not started over for a
+  // new document while one is in the process.
+  ScopedClockKeeper clock_keeper_;
 };
 
 }  // namespace content

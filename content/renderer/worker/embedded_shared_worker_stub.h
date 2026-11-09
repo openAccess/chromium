@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "base/unguessable_token.h"
+#include "content/renderer/renderer_clock.h"
 #include "content/renderer/service_worker/service_worker_provider_context.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -130,6 +131,10 @@ class EmbeddedSharedWorkerStub : public blink::WebSharedWorkerClient,
   // used by this worker (typically the network service).
   mojo::Remote<network::mojom::URLLoaderFactory>
       default_factory_disconnect_handler_holder_;
+
+  // A shared worker is no one document's, so the clock is not started over for
+  // a new document while one is in the process.
+  ScopedClockKeeper clock_keeper_;
 };
 
 }  // namespace content

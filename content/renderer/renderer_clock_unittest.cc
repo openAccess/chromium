@@ -87,5 +87,87 @@ TEST(RendererClockTest, TheClockComesBackWithTheOverride) {
       base::Seconds(1));
 }
 
+// How far the clock reads from `start` plus `since`, ignoring the few
+// milliseconds a test takes to run.
+bool ReadsAbout(base::TimeDelta since) {
+  return (base::Time::Now() - (Start() + since)).magnitude() <
+         base::Milliseconds(20);
+}
+
+TEST(RendererClockTest, ARestartStartsTheClockOverAtNavigationStart) {
+  auto clock =
+      StartClockFromCommandLine(WithClockStart(base::NumberToString(kStartMs)));
+  ASSERT_TRUE(clock);
+  base::PlatformThread::Sleep(base::Milliseconds(100));
+  ASSERT_TRUE(ReadsAbout(base::Milliseconds(100)));
+
+  // A navigation that started 2 s ago started at the moment, and the clock
+  // has run on from it since.
+  EXPECT_TRUE(RestartClockIfAlone(base::TimeTicks::Now() - base::Seconds(2),
+                                  /*only_document=*/true));
+  EXPECT_TRUE(ReadsAbout(base::Seconds(2)));
+
+  // One that starts now starts the clock over at the moment itself.
+  EXPECT_TRUE(
+      RestartClockIfAlone(base::TimeTicks::Now(), /*only_document=*/true));
+  EXPECT_TRUE(ReadsAbout(base::TimeDelta()));
+}
+
+TEST(RendererClockTest, ANavigationWithNoStartRestartsTheClockNow) {
+  auto clock =
+      StartClockFromCommandLine(WithClockStart(base::NumberToString(kStartMs)));
+  ASSERT_TRUE(clock);
+  base::PlatformThread::Sleep(base::Milliseconds(100));
+  EXPECT_TRUE(RestartClockIfAlone(base::TimeTicks(), /*only_document=*/true));
+  EXPECT_TRUE(ReadsAbout(base::TimeDelta()));
+  // A start yet to come is no reason to put the clock behind the moment.
+  base::PlatformThread::Sleep(base::Milliseconds(100));
+  EXPECT_TRUE(RestartClockIfAlone(base::TimeTicks::Now() + base::Seconds(5),
+                                  /*only_document=*/true));
+  EXPECT_TRUE(ReadsAbout(base::TimeDelta()));
+}
+
+TEST(RendererClockTest, AnotherDocumentKeepsTheClockRunning) {
+  auto clock =
+      StartClockFromCommandLine(WithClockStart(base::NumberToString(kStartMs)));
+  ASSERT_TRUE(clock);
+  base::PlatformThread::Sleep(base::Milliseconds(100));
+  EXPECT_FALSE(
+      RestartClockIfAlone(base::TimeTicks::Now(), /*only_document=*/false));
+  EXPECT_TRUE(ReadsAbout(base::Milliseconds(100)));
+}
+
+TEST(RendererClockTest, AWorkerKeepsTheClockRunningUntilItStops) {
+  auto clock =
+      StartClockFromCommandLine(WithClockStart(base::NumberToString(kStartMs)));
+  ASSERT_TRUE(clock);
+  base::PlatformThread::Sleep(base::Milliseconds(100));
+  {
+    ScopedClockKeeper service_worker;
+    ScopedClockKeeper shared_worker;
+    EXPECT_FALSE(
+        RestartClockIfAlone(base::TimeTicks::Now(), /*only_document=*/true));
+    EXPECT_TRUE(ReadsAbout(base::Milliseconds(100)));
+  }
+  EXPECT_TRUE(
+      RestartClockIfAlone(base::TimeTicks::Now(), /*only_document=*/true));
+  EXPECT_TRUE(ReadsAbout(base::TimeDelta()));
+}
+
+TEST(RendererClockTest, AClockNeverMovedIsNeverRestarted) {
+  EXPECT_FALSE(
+      RestartClockIfAlone(base::TimeTicks::Now(), /*only_document=*/true));
+  EXPECT_LT(
+      (base::Time::Now() - base::subtle::TimeNowIgnoringOverride()).magnitude(),
+      base::Seconds(1));
+  // Nor once a moved clock is gone.
+  StartClockFromCommandLine(WithClockStart(base::NumberToString(kStartMs)));
+  EXPECT_FALSE(
+      RestartClockIfAlone(base::TimeTicks::Now(), /*only_document=*/true));
+  EXPECT_LT(
+      (base::Time::Now() - base::subtle::TimeNowIgnoringOverride()).magnitude(),
+      base::Seconds(1));
+}
+
 }  // namespace
 }  // namespace content

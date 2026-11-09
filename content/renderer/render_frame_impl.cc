@@ -105,6 +105,7 @@
 #include "content/renderer/render_process.h"
 #include "content/renderer/render_thread_impl.h"
 #include "content/renderer/renderer_blink_platform_impl.h"
+#include "content/renderer/renderer_clock.h"
 #include "content/renderer/renderer_navigation_metrics_manager.h"
 #include "content/renderer/service_worker/service_worker_network_provider_for_frame.h"
 #include "content/renderer/service_worker/web_service_worker_provider_impl.h"
@@ -2004,6 +2005,30 @@ RenderFrame* RenderFrame::FromWebFrame(blink::WebLocalFrame* web_frame) {
   return RenderFrameImpl::FromWebFrame(web_frame);
 }
 
+namespace {
+
+// Whether every frame in this process is one a commit in `frame` replaces:
+// `frame` itself, the frame it replaces if it is provisional, and the frames
+// below either. With RenderDocument, every new document -- a reload included --
+// commits in a new provisional frame, so the frame it replaces is still in the
+// process here, and is not below it. The walk up goes through remote frames,
+// so a frame below is found even with a frame from another process between.
+bool IsOnlyFrameTreeInProcess(blink::WebLocalFrame* frame) {
+  const blink::WebFrame* owner = frame->GetProvisionalOwnerFrame();
+  for (const auto& [web_frame, render_frame] : g_frame_map.Get()) {
+    const blink::WebFrame* ancestor = web_frame;
+    while (ancestor && ancestor != frame && ancestor != owner) {
+      ancestor = ancestor->Parent();
+    }
+    if (!ancestor) {
+      return false;
+    }
+  }
+  return true;
+}
+
+}  // namespace
+
 // static
 void RenderFrame::ForEach(RenderFrameVisitor* visitor) {
   DCHECK(RenderThread::IsMainThread());
@@ -3112,6 +3137,12 @@ void RenderFrameImpl::CommitNavigationWithParams(
   pending_cookie_manager_info_ = std::move(cookie_manager_info);
   pending_storage_info_ = std::move(storage_info);
   original_storage_key_ = navigation_params->storage_key;
+
+  // A document starting where nothing else in the process could see the clock
+  // jump starts it over, so a replayed page reads the moment it was captured
+  // at on every load and not only the process's first.
+  RestartClockIfAlone(common_params->navigation_start,
+                      IsOnlyFrameTreeInProcess(frame_));
 
   base::WeakPtr<RenderFrameImpl> weak_self = weak_factory_.GetWeakPtr();
   frame_->CommitNavigation(std::move(navigation_params),

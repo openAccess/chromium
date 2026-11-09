@@ -161,9 +161,8 @@ int RendererMain(MainFunctionParams parameters) {
 
   // First, so that nothing in this process reads the real wall clock where it
   // was told to read another. The override is the process's for its life.
-  static base::NoDestructor<
-      std::unique_ptr<base::subtle::ScopedTimeClockOverrides>>
-      clock_override(StartClockFromCommandLine(command_line));
+  static base::NoDestructor<std::unique_ptr<RendererClock>> clock(
+      StartClockFromCommandLine(command_line));
 
 #if BUILDFLAG(IS_MAC)
   base::apple::ScopedNSAutoreleasePool* pool = parameters.autorelease_pool;
