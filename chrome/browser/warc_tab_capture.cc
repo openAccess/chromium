@@ -12,6 +12,8 @@
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
+#include "base/observer_list.h"
 #include "base/path_service.h"
 #include "base/strings/strcat.h"
 #include "base/strings/stringprintf.h"
@@ -45,6 +47,12 @@ constexpr char kCapturePartitionDomain[] = "warc-capture";
 // Where captures go when --warc-output did not say: beside the user's
 // downloads, which is where a browser puts what it saves for the user.
 constexpr char kDefaultCaptureDirectoryName[] = "WARC";
+
+base::ObserverList<WarcTabCapture::Observer>& Observers() {
+  static base::NoDestructor<base::ObserverList<WarcTabCapture::Observer>>
+      observers;
+  return *observers;
+}
 
 // The 14-digit UTC timestamp web archive tooling spells a time with.
 std::string CaptureTimestamp() {
@@ -116,11 +124,38 @@ std::optional<WarcTabCapture::OpenedCapture> OpenCapture(
 
 }  // namespace
 
+WarcTabCapture::Exchange::Exchange() = default;
+WarcTabCapture::Exchange::Exchange(const Exchange&) = default;
+WarcTabCapture::Exchange& WarcTabCapture::Exchange::operator=(
+    const Exchange&) = default;
+WarcTabCapture::Exchange::~Exchange() = default;
+
 WarcTabCapture::WarcTabCapture(content::WebContents* web_contents)
     : content::WebContentsObserver(web_contents),
-      content::WebContentsUserData<WarcTabCapture>(*web_contents) {}
+      content::WebContentsUserData<WarcTabCapture>(*web_contents),
+      serial_([] {
+        static int next_serial = 0;
+        return ++next_serial;
+      }()) {}
 
 WarcTabCapture::~WarcTabCapture() = default;
+
+// static
+void WarcTabCapture::AddObserver(Observer* observer) {
+  Observers().AddObserver(observer);
+}
+
+// static
+void WarcTabCapture::RemoveObserver(Observer* observer) {
+  Observers().RemoveObserver(observer);
+}
+
+// static
+void WarcTabCapture::NotifyCaptureChanged(content::WebContents* web_contents) {
+  for (Observer& observer : Observers()) {
+    observer.OnCaptureChanged(web_contents);
+  }
+}
 
 // static
 bool WarcTabCapture::IsCapturing(content::WebContents* web_contents) {
@@ -134,6 +169,7 @@ void WarcTabCapture::Start(content::WebContents* web_contents) {
   }
   CreateForWebContents(web_contents);
   WarcTabCapture* capture = FromWebContents(web_contents);
+  NotifyCaptureChanged(web_contents);
 
   base::ThreadPool::PostTaskAndReplyWithResult(
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},
@@ -191,6 +227,7 @@ void WarcTabCapture::Stop(content::WebContents* web_contents) {
   capture->LoadInitialUrl();
   capture->Finish();
   web_contents->RemoveUserData(UserDataKey());
+  NotifyCaptureChanged(web_contents);
 }
 
 // static
@@ -226,6 +263,7 @@ void WarcTabCapture::OnCaptureOpened(base::WeakPtr<WarcTabCapture> self,
   }
 
   self->directory_ = opened->directory;
+  NotifyCaptureChanged(self->web_contents());
 
   // From here the tab's pages are listed beside its own archive. A page that
   // committed before the capture began is written where it was headed, since
@@ -241,11 +279,37 @@ void WarcTabCapture::OnCaptureOpened(base::WeakPtr<WarcTabCapture> self,
       /*compress_records=*/true, std::move(opened->spill),
       !base::CommandLine::ForCurrentProcess()->HasSwitch(
           network::switches::kWarcIncludeCredentials),
+      self->observer_receiver_.BindNewPipeAndPassRemote(),
       base::BindOnce(&WarcTabCapture::OnCaptureStarted, self));
 }
 
 void WarcTabCapture::OnCaptureStarted() {
+  started_ = true;
+  NotifyCaptureChanged(web_contents());
   LoadInitialUrl();
+}
+
+void WarcTabCapture::OnExchangeRecorded(
+    network::mojom::WarcRecordedExchangePtr recorded) {
+  Exchange exchange;
+  exchange.url = std::move(recorded->url);
+  exchange.method = std::move(recorded->method);
+  exchange.status_code = recorded->status_code;
+  exchange.mime_type = std::move(recorded->mime_type);
+  exchange.body_bytes = recorded->body_bytes;
+  exchange.truncated = recorded->truncated;
+  exchange.time = recorded->time;
+
+  ++exchange_count_;
+  body_bytes_ += exchange.body_bytes;
+  if (exchanges_.size() == kMaxExchangesKept) {
+    exchanges_.pop_front();
+  }
+  exchanges_.push_back(exchange);
+
+  for (Observer& observer : Observers()) {
+    observer.OnExchangeRecorded(web_contents(), exchange);
+  }
 }
 
 void WarcTabCapture::LoadInitialUrl() {

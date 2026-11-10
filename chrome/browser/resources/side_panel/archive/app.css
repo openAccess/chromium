@@ -1,0 +1,125 @@
+/* Copyright 2026 The Chromium Authors
+ * Use of this source code is governed by a BSD-style license that can be
+ * found in the LICENSE file. */
+
+/* #css_wrapper_metadata_start
+ * #type=style-lit
+ * #scheme=relative
+ * #css_wrapper_metadata_end */
+
+:host {
+  color: var(--cr-primary-text-color);
+  display: flex;
+  flex-direction: column;
+  font-size: 12px;
+  height: 100vh;
+}
+
+#summary {
+  border-bottom: 1px solid var(--cr-separator-color);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 12px 10px;
+}
+
+#state {
+  align-items: center;
+  display: flex;
+  font-size: 13px;
+  font-weight: 500;
+  gap: 8px;
+}
+
+#dot {
+  background: var(--cr-secondary-text-color);
+  border-radius: 50%;
+  height: 8px;
+  width: 8px;
+}
+
+:host([state_='archiving']) #dot {
+  animation: pulse 1.5s ease-in-out infinite;
+  background: rgb(217, 48, 37);
+}
+
+:host([state_='starting']) #dot {
+  background: rgb(242, 153, 0);
+}
+
+@keyframes pulse {
+  50% { opacity: 0.35; }
+}
+
+#directory {
+  color: var(--cr-secondary-text-color);
+  font-family: monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#totals,
+.hint {
+  color: var(--cr-secondary-text-color);
+}
+
+#buttons {
+  display: flex;
+  gap: 8px;
+}
+
+#filter {
+  background: transparent;
+  border: 1px solid var(--cr-separator-color);
+  border-radius: 4px;
+  box-sizing: border-box;
+  color: inherit;
+  font: inherit;
+  padding: 4px 6px;
+  width: 100%;
+}
+
+#table {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.row {
+  border-bottom: 1px solid var(--cr-separator-color);
+  display: grid;
+  gap: 6px;
+  grid-template-columns: 42px 52px 56px minmax(0, 1fr);
+  padding: 3px 12px;
+}
+
+.row.head {
+  background: var(--cr-card-background-color, Canvas);
+  color: var(--cr-secondary-text-color);
+  position: sticky;
+  top: 0;
+}
+
+.row > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.size {
+  text-align: end;
+}
+
+.error {
+  color: rgb(217, 48, 37);
+}
+
+.method {
+  font-weight: 500;
+  margin-inline-end: 4px;
+}
+
+.hint {
+  padding: 4px 12px;
+}

@@ -189,6 +189,7 @@ no_check_generated_targets = [
   "//chrome/browser/resources/segmentation_internals:resources",
   "//chrome/browser/resources/settings:resources",
   "//chrome/browser/resources/settings_shared:resources",
+  "//chrome/browser/resources/side_panel/archive:resources",
   "//chrome/browser/resources/side_panel/bookmarks:resources",
   "//chrome/browser/resources/side_panel/comments:resources",
   "//chrome/browser/resources/side_panel/commerce:resources",

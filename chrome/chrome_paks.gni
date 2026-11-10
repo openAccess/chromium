@@ -269,6 +269,7 @@ template("chrome_extra_paks") {
         "$root_gen_dir/chrome/profile_internals_resources.pak",
         "$root_gen_dir/chrome/search_engine_choice_resources.pak",
         "$root_gen_dir/chrome/settings_resources.pak",
+        "$root_gen_dir/chrome/side_panel_archive_resources.pak",
         "$root_gen_dir/chrome/side_panel_bookmarks_resources.pak",
         "$root_gen_dir/chrome/side_panel_comments_resources.pak",
         "$root_gen_dir/chrome/side_panel_commerce_resources.pak",

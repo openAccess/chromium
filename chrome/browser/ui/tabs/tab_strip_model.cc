@@ -81,6 +81,8 @@
 #include "chrome/browser/ui/web_applications/web_app_dialog_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_launch_utils.h"
 #include "chrome/browser/ui/web_applications/web_app_tabbed_utils.h"
+#include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
+#include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/warc_tab_capture.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
@@ -228,6 +230,7 @@ bool ShouldActivateWindowForContextMenuCommand(
     case TabStripModel::CommandAiModeUnshare:
     case TabStripModel::CommandToggleFocusGroup:
     case TabStripModel::CommandToggleWarcCapture:
+    case TabStripModel::CommandShowArchivePanel:
       return true;
   }
 }
@@ -2997,6 +3000,7 @@ bool TabStripModel::IsContextMenuCommandEnabled(
     }
 
     case CommandToggleWarcCapture:
+    case CommandShowArchivePanel:
       return true;
 
     case CommandCopyURL:
@@ -3220,6 +3224,17 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
         // so are the indices of the others.
         DiscardWebContents(contents,
                            WarcTabCapture::StartInEmptyState(contents));
+      }
+      break;
+    }
+
+    case CommandShowArchivePanel: {
+      // The panel belongs to the tab, and a tab's panel shows only while the
+      // tab is in front.
+      ActivateTabAt(context_index);
+      if (SidePanelUI* side_panel =
+              SidePanelUI::From(delegate()->GetBrowserWindowInterface())) {
+        side_panel->Show(SidePanelEntryId::kArchive);
       }
       break;
     }

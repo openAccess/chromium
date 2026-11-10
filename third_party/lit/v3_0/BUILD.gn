@@ -100,6 +100,7 @@ ts_library("build_ts") {
     "//chrome/browser/resources/search_engine_choice:build_ts",
     "//chrome/browser/resources/settings:build_ts",
     "//chrome/browser/resources/settings_shared:build_ts",
+    "//chrome/browser/resources/side_panel/archive:build_ts",
     "//chrome/browser/resources/side_panel/bookmarks:build_ts",
     "//chrome/browser/resources/side_panel/comments:build_ts",
     "//chrome/browser/resources/side_panel/commerce:build_ts",

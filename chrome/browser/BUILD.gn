@@ -576,6 +576,8 @@ if (!is_android) {
       "//chrome/browser/ui/webui/settings",
       "//chrome/browser/ui/webui/settings/search/mojom",
       "//chrome/browser/ui/webui/side_panel/bookmarks",
+      "//chrome/browser/ui/webui/side_panel/archive",
+      "//chrome/browser/ui/webui/side_panel/archive:mojo_bindings",
       "//chrome/browser/ui/webui/side_panel/comments",
       "//chrome/browser/ui/webui/side_panel/comments:mojo_bindings",
       "//chrome/browser/ui/webui/side_panel/customize_chrome:customize_chrome_ui",
@@ -993,6 +995,31 @@ source_set("process_singleton_internal") {
   public_deps = [ ":process_singleton" ]
 }
 
+# Archiving a tab to a WARC capture of its own, and listing the pages a
+# capture holds. Apart from :core so that the tab strip and the UI that shows
+# a capture can use it: they cannot depend on :core, which depends on them.
+source_set("warc_capture") {
+  sources = [
+    "warc_page_recorder.cc",
+    "warc_page_recorder.h",
+    "warc_tab_capture.cc",
+    "warc_tab_capture.h",
+  ]
+  public_deps = [
+    "//base",
+    "//content/public/browser",
+    "//mojo/public/cpp/bindings",
+    "//services/network/public/mojom",
+    "//url",
+  ]
+  deps = [
+    "//chrome/browser/profiles:profile",
+    "//chrome/common:constants",
+    "//services/network/public/cpp",
+    "//ui/base",
+  ]
+}
+
 source_set("core") {
   sources = [
     "about_flags.cc",
@@ -1035,10 +1062,6 @@ source_set("core") {
     "universal_web_contents_observers.cc",
     "wacz_replay.cc",
     "wacz_replay.h",
-    "warc_page_recorder.cc",
-    "warc_page_recorder.h",
-    "warc_tab_capture.cc",
-    "warc_tab_capture.h",
   ]
 
   configs += [ "//build/config:precompiled_headers" ]
@@ -1052,6 +1075,7 @@ source_set("core") {
     ":active_use_util",
     ":after_startup_task_utils",
     ":bad_message",
+    ":warc_capture",
     ":browser_about_handler",
     ":browser_features",
     ":browser_process",
@@ -2965,6 +2989,7 @@ source_set("browser") {
       "//chrome/browser/ui/webui/on_device_internals:mojom",
       "//chrome/browser/ui/webui/page_action_internals:mojo_bindings",
       "//chrome/browser/ui/webui/search_engine_choice:mojo_bindings",
+      "//chrome/browser/ui/webui/side_panel/archive:mojo_bindings",
       "//chrome/browser/ui/webui/side_panel/bookmarks:mojo_bindings",
       "//chrome/browser/ui/webui/side_panel/comments:mojo_bindings",
       "//chrome/browser/ui/webui/side_panel/reading_list:mojo_bindings",
@@ -3257,6 +3282,8 @@ source_set("browser") {
       "//chrome/browser/ui/webui/settings:impl",
       "//chrome/browser/ui/webui/side_panel/bookmarks",
       "//chrome/browser/ui/webui/side_panel/bookmarks:impl",
+      "//chrome/browser/ui/webui/side_panel/archive",
+      "//chrome/browser/ui/webui/side_panel/archive:impl",
       "//chrome/browser/ui/webui/side_panel/comments",
       "//chrome/browser/ui/webui/side_panel/comments:impl",
       "//chrome/browser/ui/webui/side_panel/customize_chrome/customize_toolbar",
@@ -4990,6 +5017,7 @@ source_set("warc_unit_tests") {
   ]
   deps = [
     ":browser",
+    ":warc_capture",
     "//base",
     "//base/test:test_support",
     "//chrome/common",

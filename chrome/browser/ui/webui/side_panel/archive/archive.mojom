@@ -1,0 +1,75 @@
+// Copyright 2026 The Chromium Authors
+// Use of this source code is governed by a BSD-style license that can be
+// found in the LICENSE file.
+
+module archive_side_panel.mojom;
+
+// One exchange written into the tab's archive.
+struct Exchange {
+  // Counts the capture's exchanges from 1, in the order they were written, so
+  // that the page can tell one it already holds from one it does not.
+  uint32 index;
+  string url;
+  string method;
+  // 0 when the archive holds the request alone.
+  int32 status_code;
+  // Lower-cased, without parameters; empty when none was declared.
+  string mime_type;
+  // The body as stored. A double so the page can do arithmetic on it.
+  double body_bytes;
+  bool truncated;
+  // When the exchange began, in milliseconds since the Unix epoch.
+  double time_ms;
+};
+
+enum CaptureState {
+  kNotArchiving,
+  // The capture's files are being opened; nothing is recorded yet.
+  kStarting,
+  kArchiving,
+};
+
+struct CaptureStatus {
+  CaptureState state;
+  // Changes with each capture the tab starts; 0 when not archiving.
+  int32 capture_number;
+  // Where the archive and its page list are written; empty until known.
+  string directory;
+  // Every exchange written, including those no longer kept to show.
+  uint32 exchange_count;
+  double body_bytes;
+};
+
+// Used by the page to bootstrap communication with the browser.
+interface PageHandlerFactory {
+  CreatePageHandler(pending_remote<Page> page,
+                    pending_receiver<PageHandler> handler);
+};
+
+// The browser side of the panel, for the tab the panel belongs to.
+interface PageHandler {
+  // The page is ready to be shown.
+  ShowUI();
+
+  // The capture as it stands, with the exchanges it still keeps, oldest
+  // first.
+  GetCapture() => (CaptureStatus status, array<Exchange> exchanges);
+
+  // Archives the tab from an empty state, as "Archive tab" does.
+  StartArchiving();
+
+  // Stops archiving the tab and closes its archive.
+  StopArchiving();
+
+  // Opens the capture's directory in the file manager.
+  ShowDirectory();
+};
+
+// The page side, told as things happen.
+interface Page {
+  // The tab started or stopped archiving, or its capture moved on.
+  OnCaptureChanged(CaptureStatus status);
+
+  // The tab's capture wrote `exchange`.
+  OnExchangeRecorded(Exchange exchange);
+};

@@ -207,6 +207,42 @@ interface WarcOutputProvider {
   ProvideNextFile() => (mojo_base.mojom.File? file, string filename);
 };
 
+// One exchange a WARC capture wrote: what a request asked for and what came
+// back, without the bytes. Reported so that whoever started the capture can
+// show what is going into it, which nothing else can see -- the browser sees
+// a page load, not which of its requests reached the archive.
+struct WarcRecordedExchange {
+  url.mojom.Url url;
+  string method;
+
+  // The response's status code, or 0 when the archive holds the request alone
+  // -- one that failed before any response arrived.
+  int32 status_code;
+
+  // The response's media type, lower-cased and without parameters; empty when
+  // it declared none.
+  string mime_type;
+
+  // The response body as stored, which for a body kept in its wire form is
+  // still encoded.
+  uint64 body_bytes;
+
+  // Whether the stored body ends early (WARC-Truncated), for any reason.
+  bool truncated;
+
+  // When the exchange began, as recorded in WARC-Date.
+  mojo_base.mojom.Time time;
+};
+
+// Told about each exchange a WARC capture writes. Implemented in the browser
+// process by whoever started the capture.
+interface WarcCaptureObserver {
+  // Sent once the exchange's records are handed to the writer, in the order
+  // they were handed over. A record the write queue later drops for lack of
+  // room is still reported here; the archive logs that it is incomplete.
+  OnExchangeRecorded(WarcRecordedExchange exchange);
+};
+
 // Implemented by the network service. The browser process sends messages to
 // the network service over this interface.
 //
@@ -338,10 +374,14 @@ interface NetworkService {
   //
   // Starting a capture under an id already in use replaces nothing: the call
   // is ignored, and still replied to.
+  //
+  // |observer|, when given, is told about each exchange the capture writes,
+  // until the capture stops.
   StartWarcCapture(mojo_base.mojom.UnguessableToken capture_id,
                    mojo_base.mojom.File file, string filename,
                    bool compress_records, mojo_base.mojom.File? spill_file,
-                   bool redact_credentials) => ();
+                   bool redact_credentials,
+                   pending_remote<WarcCaptureObserver>? observer) => ();
 
   // Ends the capture StartWarcCapture began under |capture_id|. Requests that
   // carry the id afterwards go to the session-wide recording, if any, as

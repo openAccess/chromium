@@ -752,6 +752,10 @@
     "META": {"sizes": {"includes": [50],}},
     "includes": [4760],
   },
+  "<(SHARED_INTERMEDIATE_DIR)/chrome/browser/resources/side_panel/archive/resources.grd": {
+    "META": {"sizes": {"includes": [10],}},
+    "includes": [4765],
+  },
   "<(SHARED_INTERMEDIATE_DIR)/chrome/browser/resources/side_panel/bookmarks/code_cache_resources.grd": {
     "META": {"sizes": {"includes": [45],}},
     "includes": [4770],

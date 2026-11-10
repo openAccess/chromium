@@ -43,6 +43,36 @@ namespace network {
 // there; the underlying warc::WarcWriter moves the actual file I/O to a
 // blocking-capable sequence.
 
+// What one exchange put in the archive, without the bytes: enough for whoever
+// started a capture to show what is going into it.
+struct COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeSummary {
+  WarcExchangeSummary();
+  WarcExchangeSummary(const WarcExchangeSummary&);
+  WarcExchangeSummary& operator=(const WarcExchangeSummary&);
+  ~WarcExchangeSummary();
+
+  GURL url;
+  std::string method;
+
+  // 0 when only the request was recorded.
+  int status_code = 0;
+
+  // Lower-cased, without parameters; empty when the response declared none.
+  std::string mime_type;
+
+  // The body as stored.
+  uint64_t body_bytes = 0;
+
+  bool truncated = false;
+
+  // WARC-Date: when the exchange began.
+  base::Time time;
+};
+
+// Told about each exchange once its records are handed to the writer.
+using ExchangeRecordedCallback =
+    base::RepeatingCallback<void(const WarcExchangeSummary&)>;
+
 // Accumulates a single request/response exchange and emits the resulting pair
 // of WARC records when it completes.
 //
@@ -137,10 +167,18 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
   // nothing.
   void Finish();
 
+  // Called with a summary of the exchange once its records are handed to the
+  // writer -- and not at all when there was nothing to write.
+  void SetOnRecorded(ExchangeRecordedCallback on_recorded);
+
   bool body_truncated() const { return !truncated_reason_.empty(); }
 
  private:
+  // Writes the records, then reports them.
   void EmitRecords();
+
+  // Hands the records to the writer. Returns whether there were any.
+  bool WriteRecords();
 
   // Moves whatever is buffered to disk and starts hashing as bytes go past.
   // Returns false when no spill file was available.
@@ -160,6 +198,12 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcExchangeRecorder {
 
   GURL target_url_;
   base::Time date_;
+
+  // For the summary; the records carry these in their header blocks.
+  std::string method_;
+  int status_code_ = 0;
+  std::string mime_type_;
+  ExchangeRecordedCallback on_recorded_;
   std::string protocol_;
   std::string ip_address_;
   std::string truncated_reason_;
@@ -302,6 +346,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
   // fetches means two captures each get their own copy.
   bool ClaimRangeCompletion(const GURL& url);
 
+  // Tells `exchange_recorded` about every exchange recorded from now on --
+  // each recorder this hands out reports through it.
+  void SetExchangeRecordedCallback(ExchangeRecordedCallback exchange_recorded);
+
   base::WeakPtr<WarcRecorder> GetWeakPtr() {
     return weak_factory_.GetWeakPtr();
   }
@@ -354,6 +402,8 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) WarcRecorder {
 
   // URLs this capture has completed, is completing, or has queued.
   std::set<GURL> range_completions_;
+
+  ExchangeRecordedCallback exchange_recorded_;
 
   std::unique_ptr<warc::WarcBodySpill> TakeBodySpill();
   void ReturnSpillFile(base::File file);

@@ -54,6 +54,7 @@ chromium-metrics-reviews@google.com.
 
 <variants name="SidePanelEntry">
   <variant name="AboutThisSite" summary="about this site"/>
+  <variant name="Archive" summary="archive"/>
   <variant name="Assistant" summary="assistant"/>
   <variant name="Bookmarks" summary="bookmarks"/>
   <variant name="Comments" summary="comments"/>

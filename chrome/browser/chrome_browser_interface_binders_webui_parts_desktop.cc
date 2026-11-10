@@ -76,6 +76,8 @@
 #include "chrome/browser/ui/webui/settings/search/mojom/settings_search.mojom.h"
 #include "chrome/browser/ui/webui/settings/settings_ui.h"
 #include "chrome/browser/ui/webui/side_panel/bookmarks/bookmarks_side_panel_ui.h"
+#include "chrome/browser/ui/webui/side_panel/archive/archive.mojom.h"
+#include "chrome/browser/ui/webui/side_panel/archive/archive_side_panel_ui.h"
 #include "chrome/browser/ui/webui/side_panel/comments/comments.mojom.h"
 #include "chrome/browser/ui/webui/side_panel/comments/comments_side_panel_ui.h"
 #include "chrome/browser/ui/webui/side_panel/customize_chrome/customize_chrome.mojom.h"
@@ -395,6 +397,8 @@ void PopulateChromeWebUIFrameBindersPartsDesktop(
                                          BookmarksUI>(map);
   RegisterWebUIControllerInterfaceBinder<comments::mojom::PageHandlerFactory,
                                          CommentsSidePanelUI>(map);
+  RegisterWebUIControllerInterfaceBinder<
+      archive_side_panel::mojom::PageHandlerFactory, ArchiveSidePanelUI>(map);
 
   RegisterWebUIControllerInterfaceBinder<
       shopping_service::mojom::ShoppingServiceHandlerFactory,

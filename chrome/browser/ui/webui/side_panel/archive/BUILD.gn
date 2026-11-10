@@ -1,0 +1,48 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//mojo/public/tools/bindings/mojom.gni")
+
+assert(!is_android)
+
+mojom("mojo_bindings") {
+  sources = [ "archive.mojom" ]
+  webui_module_path = "/"
+}
+
+source_set("archive") {
+  public = [
+    "archive_page_handler.h",
+    "archive_side_panel_ui.h",
+  ]
+  public_deps = [
+    ":mojo_bindings",
+    "//base",
+    "//chrome/browser:warc_capture",
+    "//chrome/browser/ui/webui/top_chrome",
+    "//content/public/browser",
+    "//mojo/public/cpp/bindings",
+  ]
+}
+
+source_set("impl") {
+  sources = [
+    "archive_page_handler.cc",
+    "archive_side_panel_ui.cc",
+  ]
+  public_deps = [ ":archive" ]
+  deps = [
+    "//chrome/app:generated_resources",
+    "//chrome/browser:primitives",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/resources/side_panel/archive:resources",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/browser/ui/webui:webui_util",
+    "//chrome/common",
+    "//components/tabs:public",
+    "//ui/base",
+    "//ui/webui",
+  ]
+}

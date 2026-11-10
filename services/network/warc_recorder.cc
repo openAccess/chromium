@@ -157,6 +157,12 @@ std::string FindHeader(const net::HttpRawRequestHeaders& headers,
 
 }  // namespace
 
+WarcExchangeSummary::WarcExchangeSummary() = default;
+WarcExchangeSummary::WarcExchangeSummary(const WarcExchangeSummary&) = default;
+WarcExchangeSummary& WarcExchangeSummary::operator=(
+    const WarcExchangeSummary&) = default;
+WarcExchangeSummary::~WarcExchangeSummary() = default;
+
 WarcExchangeRecorder::WarcExchangeRecorder(
     base::WeakPtr<warc::WarcWriter> writer,
     size_t max_body_bytes,
@@ -186,6 +192,7 @@ void WarcExchangeRecorder::SetTargetUrl(const GURL& url) {
 void WarcExchangeRecorder::SetRequestHeaders(
     const net::HttpRawRequestHeaders& headers,
     const std::string& method) {
+  method_ = method;
   std::string block;
 
   if (!headers.request_line().empty()) {
@@ -235,6 +242,9 @@ void WarcExchangeRecorder::SetResponseHeaders(
   // raw_headers() stores lines NUL-separated; this restores CRLF framing and
   // appends the blank line that ends the header block. For HTTP/2 and HTTP/3
   // the result is a reconstruction, since no such block was ever transmitted.
+  status_code_ = headers->response_code();
+  mime_type_.clear();
+  headers->GetMimeType(&mime_type_);
   response_head_ =
       net::HttpUtil::ConvertHeadersBackToHTTPResponse(headers->raw_headers());
   if (redact_credentials_) {
@@ -342,11 +352,33 @@ void WarcExchangeRecorder::Finish() {
   EmitRecords();
 }
 
+void WarcExchangeRecorder::SetOnRecorded(
+    ExchangeRecordedCallback on_recorded) {
+  on_recorded_ = std::move(on_recorded);
+}
+
 void WarcExchangeRecorder::EmitRecords() {
   finished_ = true;
 
-  if (!writer_ || !target_url_.is_valid()) {
-    return;
+  // Taken before writing, which hands a spilled body over with the record.
+  WarcExchangeSummary summary;
+  summary.url = target_url_;
+  summary.method = method_;
+  summary.status_code = has_response_headers_ ? status_code_ : 0;
+  summary.mime_type = has_response_headers_ ? mime_type_ : std::string();
+  summary.body_bytes = spill_ ? spill_->size() : body_.size();
+  summary.truncated = !truncated_reason_.empty();
+  summary.time = date_;
+
+  if (WriteRecords() && on_recorded_) {
+    on_recorded_.Run(summary);
+  }
+}
+
+bool WarcExchangeRecorder::WriteRecords() {
+  if (!writer_ || !target_url_.is_valid() ||
+      (!has_request_headers_ && !has_response_headers_)) {
+    return false;
   }
 
   const std::string target_uri = target_url_.spec();
@@ -392,7 +424,7 @@ void WarcExchangeRecorder::EmitRecords() {
 
     if (spill_) {
       EmitSpilledResponseRecord(header);
-      return;
+      return true;
     }
 
     // When the body reaching us was already decoded, the recorded headers must
@@ -411,6 +443,7 @@ void WarcExchangeRecorder::EmitRecords() {
     writer_->AddRecord(warc::SerializeRecord(header, block, payload_offset,
                                              warc::DigestAlgorithm::kSha1));
   }
+  return true;
 }
 
 void WarcExchangeRecorder::EmitSpilledResponseRecord(
@@ -495,9 +528,11 @@ void WarcRecorder::OnNextFile(base::File file, const std::string& filename) {
 std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateExchangeRecorder(
     const std::string& browsing_context) {
   MaybeRotate();
-  return std::make_unique<WarcExchangeRecorder>(
+  auto recorder = std::make_unique<WarcExchangeRecorder>(
       writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes,
       WarcinfoResolver(browsing_context), redact_credentials_);
+  recorder->SetOnRecorded(exchange_recorded_);
+  return recorder;
 }
 
 std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateCompletionRecorder(
@@ -506,6 +541,7 @@ std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateCompletionRecorder(
   auto recorder = std::make_unique<WarcExchangeRecorder>(
       writer_weak_factory_.GetWeakPtr(), limits_.max_body_bytes,
       WarcinfoResolver(browsing_context), redact_credentials_);
+  recorder->SetOnRecorded(exchange_recorded_);
   recorder->EnableBodySpilling(
       // A WeakPtr cannot bind to a method that returns a value, and an
       // exchange recorder may outlive the session recorder.
@@ -518,6 +554,11 @@ std::unique_ptr<WarcExchangeRecorder> WarcRecorder::CreateCompletionRecorder(
       base::BindRepeating(&WarcRecorder::ReturnSpillFile,
                           weak_factory_.GetWeakPtr()));
   return recorder;
+}
+
+void WarcRecorder::SetExchangeRecordedCallback(
+    ExchangeRecordedCallback exchange_recorded) {
+  exchange_recorded_ = std::move(exchange_recorded);
 }
 
 bool WarcRecorder::ClaimRangeCompletion(const GURL& url) {

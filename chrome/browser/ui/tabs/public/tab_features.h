@@ -43,6 +43,7 @@
 #include "ui/base/unowned_user_data/user_data_factory.h"
 
 class AboutThisSiteTabHelper;
+class ArchiveSidePanelController;
 class AskBeforeHttpDialogController;
 class AutoPictureInPictureTabHelper;
 class BookmarkBarPreloadPipelineManager;
@@ -501,6 +502,9 @@ class TabFeatures {
 
   // Responsible for managing the read anything (Reading mode) feature.
   std::unique_ptr<ReadAnythingController> read_anything_controller_;
+
+  // The tab's Archive side panel; see WarcTabCapture.
+  std::unique_ptr<ArchiveSidePanelController> archive_side_panel_controller_;
 
   // Responsible for commerce related features.
   std::unique_ptr<commerce::CommerceTabHelper> commerce_tab_helper_;

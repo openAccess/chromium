@@ -1769,16 +1769,52 @@ base::File OpenWarcForWriting(const base::FilePath& path) {
                     base::File::FLAG_CREATE_ALWAYS | base::File::FLAG_WRITE);
 }
 
-void StartWarcCaptureAndWait(mojom::NetworkService* service,
-                             const base::UnguessableToken& id,
-                             const base::FilePath& path) {
+void StartWarcCaptureAndWait(
+    mojom::NetworkService* service,
+    const base::UnguessableToken& id,
+    const base::FilePath& path,
+    mojo::PendingRemote<mojom::WarcCaptureObserver> observer = {}) {
   base::test::TestFuture<void> started;
   service->StartWarcCapture(id, OpenWarcForWriting(path),
                             path.BaseName().AsUTF8Unsafe(),
                             /*compress_records=*/false, base::File(),
-                            /*redact_credentials=*/true, started.GetCallback());
+                            /*redact_credentials=*/true, std::move(observer),
+                            started.GetCallback());
   ASSERT_TRUE(started.Wait());
 }
+
+// Keeps what a capture reports, as the browser does to show it.
+class RecordingWarcCaptureObserver : public mojom::WarcCaptureObserver {
+ public:
+  mojo::PendingRemote<mojom::WarcCaptureObserver> BindNewPipeAndPassRemote() {
+    return receiver_.BindNewPipeAndPassRemote();
+  }
+
+  void WaitForExchanges(size_t count) {
+    while (exchanges_.size() < count) {
+      base::RunLoop run_loop;
+      quit_ = run_loop.QuitClosure();
+      run_loop.Run();
+    }
+  }
+
+  const std::vector<mojom::WarcRecordedExchangePtr>& exchanges() const {
+    return exchanges_;
+  }
+
+  // mojom::WarcCaptureObserver:
+  void OnExchangeRecorded(mojom::WarcRecordedExchangePtr exchange) override {
+    exchanges_.push_back(std::move(exchange));
+    if (quit_) {
+      std::move(quit_).Run();
+    }
+  }
+
+ private:
+  mojo::Receiver<mojom::WarcCaptureObserver> receiver_{this};
+  std::vector<mojom::WarcRecordedExchangePtr> exchanges_;
+  base::OnceClosure quit_;
+};
 
 void StopWarcCaptureAndWait(mojom::NetworkService* service,
                             const base::UnguessableToken& id) {
@@ -1841,6 +1877,38 @@ TEST_F(NetworkServiceTestWithService, WarcCaptureRecordsOnlyItsOwnRequests) {
   EXPECT_NE(session.find("GET /echoquery?to-session "), std::string::npos);
   EXPECT_EQ(session.find("to-a"), std::string::npos);
   EXPECT_EQ(session.find("to-b"), std::string::npos);
+}
+
+// Whoever started a capture hears about each exchange written into it, and
+// about nothing written anywhere else.
+TEST_F(NetworkServiceTestWithService, WarcCaptureReportsWhatItRecords) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath tab_path = temp_dir.GetPath().AppendASCII("tab.warc");
+  const auto tab = base::UnguessableToken::Create();
+  RecordingWarcCaptureObserver observer;
+
+  StartWarcCaptureAndWait(service(), tab, tab_path,
+                          observer.BindNewPipeAndPassRemote());
+  CreateNetworkContext();
+
+  // "/echo" answers 200, text/html, "Echo".
+  const GURL recorded = test_server()->GetURL("/echo?recorded");
+  LoadForWarcCapture(context(), recorded, tab);
+  LoadForWarcCapture(context(), test_server()->GetURL("/echoquery?elsewhere"),
+                     std::nullopt);
+  observer.WaitForExchanges(1);
+  StopWarcCaptureAndWait(service(), tab);
+  task_environment_.RunUntilIdle();
+
+  ASSERT_EQ(1u, observer.exchanges().size());
+  const mojom::WarcRecordedExchangePtr& exchange = observer.exchanges()[0];
+  EXPECT_EQ(recorded, exchange->url);
+  EXPECT_EQ("GET", exchange->method);
+  EXPECT_EQ(200, exchange->status_code);
+  EXPECT_EQ("text/html", exchange->mime_type);
+  EXPECT_EQ(std::string("Echo").size(), exchange->body_bytes);
+  EXPECT_FALSE(exchange->truncated);
 }
 
 // A navigation is marked on the request rather than the factory, since the

@@ -12345,6 +12345,62 @@ Check your passwords anytime in <ph name="GOOGLE_PASSWORD_MANAGER">$1<ex>Google 
         Waiting for <ph name="HOST_NAME">$1<ex>www.google.com</ex></ph>...
       </message>
 
+      <!-- Archive side panel -->
+      <message name="IDS_ARCHIVE_SIDE_PANEL_TITLE" desc="Title of the side panel that shows what a tab is archiving to a WARC web archive, as it happens.">
+        Archive
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_NOT_ARCHIVING" desc="State shown in the archive side panel when the tab is not being archived.">
+        Not archiving
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_NOT_ARCHIVING_HINT" desc="Explanation in the archive side panel when the tab is not being archived, saying what starting does.">
+        Archiving reloads this tab from an empty state and records everything it loads from then on.
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_STARTING" desc="State shown in the archive side panel while the tab's archive is being opened, before anything is recorded.">
+        Starting…
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_ARCHIVING" desc="State shown in the archive side panel while the tab is being archived.">
+        Archiving
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_STOPPED" desc="State shown in the archive side panel after the tab stopped being archived; what was recorded is still listed.">
+        Stopped
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_START" desc="Button in the archive side panel that starts archiving the tab.">
+        Start archiving
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_STOP" desc="Button in the archive side panel that stops archiving the tab and closes its archive.">
+        Stop archiving
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_SHOW_FOLDER" desc="Button in the archive side panel that opens the folder the tab's archive is written to.">
+        Show folder
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_FILTER" desc="Placeholder of the box in the archive side panel that filters the list of recorded requests by URL, method, status or type.">
+        Filter
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_STATUS_COLUMN" desc="Heading of the column in the archive side panel giving each recorded response's HTTP status code.">
+        Status
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_TYPE_COLUMN" desc="Heading of the column in the archive side panel giving each recorded response's media type.">
+        Type
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_SIZE_COLUMN" desc="Heading of the column in the archive side panel giving the size of each recorded response body.">
+        Size
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_URL_COLUMN" desc="Heading of the column in the archive side panel giving each recorded request's URL.">
+        URL
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_REQUEST_ONLY" desc="Tooltip in the archive side panel for a request that was recorded without a response, because none arrived.">
+        No response was received; only the request is archived.
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_TRUNCATED" desc="Tooltip in the archive side panel for a response whose body was archived incomplete.">
+        The archived body is incomplete.
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_TOTALS" desc="Summary in the archive side panel of how many requests the tab's archive holds and how large their bodies are.">
+        <ph name="COUNT">$1<ex>113</ex></ph> recorded · <ph name="SIZE">$2<ex>1.7 MB</ex></ph>
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_OLDER_NOT_SHOWN" desc="Note at the top of the archive side panel's list when the earliest recorded requests are no longer listed. They are still in the archive.">
+        <ph name="COUNT">$1<ex>1,204</ex></ph> earlier requests are archived but not listed.
+      </message>
+
       <!-- Tab Context Menu -->
       <if expr="not use_titlecase">
         <message name="IDS_TAB_CXMENU_NEWTABTORIGHT" desc="The label of the 'New Tab to the Right' Tab context menu item. Translate this verbatim, do not localize for RTL languages (we have separate strings for RTL).">
@@ -12394,6 +12450,9 @@ Check your passwords anytime in <ph name="GOOGLE_PASSWORD_MANAGER">$1<ex>Google 
         </message>
         <message name="IDS_TAB_CXMENU_STOP_WARC_CAPTURE" desc="The label of the tab context menu item that stops archiving one or more tabs to a WARC web archive and closes their archives.">
           {NUM_TABS, plural, =1 {Stop archiving tab} other {Stop archiving tabs}}
+        </message>
+        <message name="IDS_TAB_CXMENU_SHOW_ARCHIVE_PANEL" desc="The label of the tab context menu item that opens the side panel showing what the tab is archiving to a WARC web archive.">
+          Show archive panel
         </message>
         <message name="IDS_TAB_CXMENU_SOUND_MUTE_SITE" desc="The label of the tab context menu item for muting one or more sites. NOTE: If having no explicit # makes the phrasing awkward, feel free to add a # as necessary. [ICU Syntax]">
           {NUM_TABS, plural, =1 {Mute site} other {Mute sites}}
@@ -12539,6 +12598,9 @@ Check your passwords anytime in <ph name="GOOGLE_PASSWORD_MANAGER">$1<ex>Google 
         </message>
         <message name="IDS_TAB_CXMENU_STOP_WARC_CAPTURE" desc="In Title Case: The label of the tab context menu item that stops archiving one or more tabs to a WARC web archive and closes their archives.">
           {NUM_TABS, plural, =1 {Stop Archiving Tab} other {Stop Archiving Tabs}}
+        </message>
+        <message name="IDS_TAB_CXMENU_SHOW_ARCHIVE_PANEL" desc="In Title Case: The label of the tab context menu item that opens the side panel showing what the tab is archiving to a WARC web archive.">
+          Show Archive Panel
         </message>
         <message name="IDS_TAB_CXMENU_SOUND_MUTE_SITE" desc="In Title Case: The label of the tab context menu item for muting one or more sites. NOTE: If having no explicit # makes the phrasing awkward, feel free to add a # as necessary. [ICU Syntax]">
           {NUM_TABS, plural, =1 {Mute Site} other {Mute Sites}}

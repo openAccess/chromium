@@ -45,6 +45,7 @@
     "TabsFromOtherDevices")                                                   \
   V(kSidePanelDev, std::nullopt, "SidePanelDev")                              \
   V(kTestTabScopedEntry, std::nullopt, "TestTabScopedEntry")                  \
+  V(kArchive, kActionSidePanelShowArchive, "Archive")                         \
   /* Extensions (nothing more should be added below here) */                  \
   V(kExtension, std::nullopt, "Extension")
 

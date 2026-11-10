@@ -577,6 +577,11 @@ void TabMenuModel::Build(int index) {
                   ? IDS_TAB_CXMENU_START_WARC_CAPTURE
                   : IDS_TAB_CXMENU_STOP_WARC_CAPTURE,
               num_tabs));
+  // What a tab is archiving shows in a side panel of its own.
+  if (num_tabs == 1) {
+    AddItemWithStringId(TabStripModel::CommandShowArchivePanel,
+                        IDS_TAB_CXMENU_SHOW_ARCHIVE_PANEL);
+  }
 
   const bool show_glic_items =
       glic::GlicEnabling::IsReadyForProfile(tab_strip_->profile());

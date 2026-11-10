@@ -191,6 +191,7 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkService
                         bool compress_records,
                         base::File spill_file,
                         bool redact_credentials,
+                        mojo::PendingRemote<mojom::WarcCaptureObserver> observer,
                         StartWarcCaptureCallback callback) override;
   void StopWarcCapture(const base::UnguessableToken& capture_id,
                        StopWarcCaptureCallback callback) override;

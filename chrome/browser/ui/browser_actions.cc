@@ -532,6 +532,12 @@ void BrowserActions::InitializeSidePanelActions() {
                         kActionSidePanelShowTabsFromOtherDevices, bwi, true)
             .Build());
   }
+  // Shows what the tab is archiving; see WarcTabCapture.
+  root_action_item_->AddChild(
+      SidePanelAction(SidePanelEntryId::kArchive, IDS_ARCHIVE_SIDE_PANEL_TITLE,
+                      IDS_ARCHIVE_SIDE_PANEL_TITLE, kDownloadIcon,
+                      kActionSidePanelShowArchive, bwi, /*is_pinnable=*/false)
+          .Build());
   root_action_item_->AddChild(
       SidePanelAction(SidePanelEntryId::kAboutThisSite,
                       IDS_PAGE_INFO_ABOUT_THIS_PAGE_TITLE,

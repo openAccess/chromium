@@ -1473,6 +1473,8 @@ void NetworkService::StartWarcCapture(const base::UnguessableToken& capture_id,
                                       bool compress_records,
                                       base::File spill_file,
                                       bool redact_credentials,
+                                      mojo::PendingRemote<
+                                          mojom::WarcCaptureObserver> observer,
                                       StartWarcCaptureCallback callback) {
   if (!file.IsValid()) {
     LOG(ERROR) << "WARC capture not started: file is not open for writing.";
@@ -1493,6 +1495,21 @@ void NetworkService::StartWarcCapture(const base::UnguessableToken& capture_id,
       redact_credentials);
   if (spill_file.IsValid()) {
     recorder->SetSpillFile(std::move(spill_file));
+  }
+  if (observer) {
+    // Owned by the callback, which the recorder and each exchange it hands out
+    // hold: the observer hears from the capture for as long as any of its
+    // exchanges can still be written, and the pipe closes when they are gone.
+    recorder->SetExchangeRecordedCallback(base::BindRepeating(
+        [](mojo::Remote<mojom::WarcCaptureObserver>* observer,
+           const WarcExchangeSummary& summary) {
+          (*observer)->OnExchangeRecorded(mojom::WarcRecordedExchange::New(
+              summary.url, summary.method, summary.status_code,
+              summary.mime_type, summary.body_bytes, summary.truncated,
+              summary.time));
+        },
+        base::Owned(std::make_unique<mojo::Remote<mojom::WarcCaptureObserver>>(
+            std::move(observer)))));
   }
   recorder->WriteWarcinfo(filename);
   warc_captures_.emplace(capture_id, std::move(recorder));

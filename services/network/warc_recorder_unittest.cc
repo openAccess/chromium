@@ -437,6 +437,105 @@ TEST_F(WarcRecorderTest, ExchangeWithoutValidUrlIsDropped) {
   EXPECT_EQ("", FinishAndRead(std::move(recorder)));
 }
 
+// Collects what a recorder reports, as a capture's observer would.
+ExchangeRecordedCallback CollectInto(std::vector<WarcExchangeSummary>& out) {
+  return base::BindRepeating(
+      [](std::vector<WarcExchangeSummary>* out,
+         const WarcExchangeSummary& summary) { out->push_back(summary); },
+      base::Unretained(&out));
+}
+
+TEST_F(WarcRecorderTest, ReportsEachRecordedExchange) {
+  auto recorder = MakeRecorder();
+  std::vector<WarcExchangeSummary> reported;
+  recorder->SetExchangeRecordedCallback(CollectInto(reported));
+
+  {
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
+    exchange->SetTargetUrl(GURL("https://example.org/page"));
+    net::HttpRawRequestHeaders request_headers;
+    request_headers.set_request_line("POST /page HTTP/1.1\r\n");
+    exchange->SetRequestHeaders(request_headers, "POST");
+    exchange->SetResponseHeaders(MakeResponseHeaders(
+        "HTTP/1.1 404 Not Found\nContent-Type: Text/HTML; charset=utf-8\n\n"));
+    exchange->AddBodyBytes(base::as_byte_span(std::string_view("not here")));
+    // Not reported until its records are handed over.
+    EXPECT_TRUE(reported.empty());
+    exchange->Finish();
+  }
+
+  ASSERT_EQ(1u, reported.size());
+  EXPECT_EQ(GURL("https://example.org/page"), reported[0].url);
+  EXPECT_EQ("POST", reported[0].method);
+  EXPECT_EQ(404, reported[0].status_code);
+  EXPECT_EQ("text/html", reported[0].mime_type);
+  EXPECT_EQ(8u, reported[0].body_bytes);
+  EXPECT_FALSE(reported[0].truncated);
+  EXPECT_FALSE(reported[0].time.is_null());
+  FinishAndRead(std::move(recorder));
+}
+
+TEST_F(WarcRecorderTest, ReportsARequestThatGotNoResponse) {
+  auto recorder = MakeRecorder();
+  std::vector<WarcExchangeSummary> reported;
+  recorder->SetExchangeRecordedCallback(CollectInto(reported));
+
+  {
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
+    exchange->SetTargetUrl(GURL("https://example.org/refused"));
+    net::HttpRawRequestHeaders request_headers;
+    request_headers.set_request_line("GET /refused HTTP/1.1\r\n");
+    exchange->SetRequestHeaders(request_headers, "GET");
+    exchange->Finish();
+  }
+
+  ASSERT_EQ(1u, reported.size());
+  EXPECT_EQ(0, reported[0].status_code);
+  EXPECT_EQ("", reported[0].mime_type);
+  EXPECT_EQ(0u, reported[0].body_bytes);
+  FinishAndRead(std::move(recorder));
+}
+
+TEST_F(WarcRecorderTest, ReportsAnAbandonedExchangeAsTruncated) {
+  auto recorder = MakeRecorder();
+  std::vector<WarcExchangeSummary> reported;
+  recorder->SetExchangeRecordedCallback(CollectInto(reported));
+
+  {
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
+    exchange->SetTargetUrl(GURL("https://example.org/aborted"));
+    exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
+    exchange->AddBodyBytes(base::as_byte_span(std::string_view("partial")));
+  }
+
+  ASSERT_EQ(1u, reported.size());
+  EXPECT_TRUE(reported[0].truncated);
+  EXPECT_EQ(7u, reported[0].body_bytes);
+  FinishAndRead(std::move(recorder));
+}
+
+TEST_F(WarcRecorderTest, ReportsNothingWhenNothingIsWritten) {
+  auto recorder = MakeRecorder();
+  std::vector<WarcExchangeSummary> reported;
+  recorder->SetExchangeRecordedCallback(CollectInto(reported));
+
+  {
+    // No URL: dropped, so nothing to report.
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
+    exchange->SetResponseHeaders(MakeResponseHeaders("HTTP/1.1 200 OK\n\n"));
+    exchange->Finish();
+  }
+  {
+    // A URL and nothing else: no record either.
+    auto exchange = recorder->CreateExchangeRecorder("https://example.org");
+    exchange->SetTargetUrl(GURL("https://example.org/nothing"));
+    exchange->Finish();
+  }
+
+  EXPECT_TRUE(reported.empty());
+  EXPECT_EQ("", FinishAndRead(std::move(recorder)));
+}
+
 TEST_F(WarcRecorderTest, WarcinfoDescribesTheCapture) {
   auto recorder = MakeRecorder();
   recorder->WriteWarcinfo("out.warc");

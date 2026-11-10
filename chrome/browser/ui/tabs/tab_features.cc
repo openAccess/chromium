@@ -192,6 +192,7 @@
 #include "chrome/browser/ui/views/location_bar/cookie_controls/cookie_controls_page_action_controller.h"
 #include "chrome/browser/ui/views/location_bar/lens_overlay_homework_page_action_controller.h"
 #include "chrome/browser/ui/views/passwords/manage_passwords_page_action_controller.h"
+#include "chrome/browser/ui/views/side_panel/archive/archive_side_panel_controller.h"
 #include "chrome/browser/ui/views/side_panel/customize_chrome/side_panel_controller_views.h"
 #include "chrome/browser/ui/views/tab_sharing/tab_capture_contents_border_helper.h"
 #include "chrome/browser/ui/views/translate/translate_page_action_controller.h"
@@ -859,6 +860,9 @@ void TabFeatures::Init(TabInterface& tab, Profile* profile) {
   read_anything_controller_ =
       GetUserDataFactory().CreateInstance<ReadAnythingController>(
           tab, &tab, side_panel_registry_.get());
+
+  archive_side_panel_controller_ = std::make_unique<ArchiveSidePanelController>(
+      &tab, side_panel_registry_.get());
 
   // Create the HttpAuthCacheStatus to start observing resource load
   // completions.

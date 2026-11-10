@@ -47,6 +47,7 @@ const ui::ThemeProvider* g_theme_provider_for_testing = nullptr;
 const std::string_view* GetWebUIMetricsHostname(const GURL& webui_url) {
   static constexpr auto kWebUIHostnames =
       base::MakeFixedFlatMap<std::string_view, std::string_view>({
+          {chrome::kChromeUIArchiveSidePanelHost, "ArchiveSidePanel"},
           {chrome::kChromeUIBookmarksHost, "Bookmarks"},
           {chrome::kChromeUIBookmarksSidePanelHost, "BookmarksSidePanel"},
           {chrome::kChromeUICommentsSidePanelHost, "CommentsSidePanel"},

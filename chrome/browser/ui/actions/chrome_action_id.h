@@ -330,6 +330,7 @@
 #define SIDE_PANEL_ACTION_IDS \
   /* Side Panel items */ \
   E(kActionSidePanelShowAboutThisSite) \
+  E(kActionSidePanelShowArchive) \
   E(kActionSidePanelShowAssistant) \
   E(kActionSidePanelShowBookmarks, IDC_SHOW_BOOKMARK_SIDE_PANEL) \
   E(kActionSidePanelShowComments, IDC_SHOW_COMMENTS_SIDE_PANEL) \
