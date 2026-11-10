@@ -20,6 +20,7 @@ source_set("archive") {
     ":mojo_bindings",
     "//base",
     "//chrome/browser:warc_capture",
+    "//chrome/browser/archive_agent",
     "//chrome/browser/ui/webui/top_chrome",
     "//chrome/browser/wacz_replay:log",
     "//content/public/browser",
@@ -29,11 +30,14 @@ source_set("archive") {
 
 source_set("impl") {
   sources = [
+    "archive_agent_queries.cc",
+    "archive_agent_queries.h",
     "archive_page_handler.cc",
     "archive_side_panel_ui.cc",
   ]
   public_deps = [ ":archive" ]
   deps = [
+    "//base:i18n",
     "//chrome/app:generated_resources",
     "//chrome/browser:primitives",
     "//chrome/browser/profiles:profile",
@@ -47,5 +51,20 @@ source_set("impl") {
     "//net",
     "//ui/base",
     "//ui/webui",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "archive_agent_queries_unittest.cc" ]
+  deps = [
+    ":impl",
+    "//base",
+    "//chrome/browser/wacz_replay:log",
+    "//chrome/test/base:chrome_render_view_host_test_harness",
+    "//components/warc:replay",
+    "//net",
+    "//testing/gtest",
+    "//url",
   ]
 }

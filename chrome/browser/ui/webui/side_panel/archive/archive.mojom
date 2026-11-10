@@ -65,6 +65,22 @@ struct CaptureStatus {
 };
 
 // Used by the page to bootstrap communication with the browser.
+enum AgentEventKind {
+  // The answer continues with `text`.
+  kText,
+  // The assistant is using a tool: `text` is its name and arguments.
+  kToolCall,
+  // The answer is finished; the assistant can be asked again.
+  kIdle,
+  // Something went wrong: `text` says what.
+  kError,
+};
+
+struct AgentEvent {
+  AgentEventKind kind;
+  string text;
+};
+
 interface PageHandlerFactory {
   CreatePageHandler(pending_remote<Page> page,
                     pending_receiver<PageHandler> handler);
@@ -88,6 +104,12 @@ interface PageHandler {
   // Opens the capture's directory in the file manager, or for a replay, the
   // directory holding the archive.
   ShowDirectory();
+
+  // Asks the assistant about the tab, starting it if it is not running.
+  AskAgent(string question);
+
+  // Stops the assistant's answer.
+  StopAgent();
 };
 
 // The page side, told as things happen.
@@ -97,4 +119,7 @@ interface Page {
 
   // The tab's capture wrote `exchange`.
   OnExchangeRecorded(Exchange exchange);
+
+  // The assistant said or did something.
+  OnAgentEvent(AgentEvent event);
 };

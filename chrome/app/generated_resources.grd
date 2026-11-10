@@ -12427,6 +12427,24 @@ Check your passwords anytime in <ph name="GOOGLE_PASSWORD_MANAGER">$1<ex>Google 
       <message name="IDS_ARCHIVE_SIDE_PANEL_ANSWERED_BY" desc="Tooltip in the archive side panel for a replayed request that the archive answered with a capture of a different URL, the nearest one it had.">
         Answered by the capture of <ph name="URL">$1<ex>https://example.com/data.json?cb=111</ex></ph>
       </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_REQUESTS_VIEW" desc="Tab in the archive side panel showing the list of the tab's archived or replayed requests.">
+        Requests
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_ASSISTANT_VIEW" desc="Tab in the archive side panel showing a conversation with an AI assistant about the tab's archived or replayed requests.">
+        Assistant
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_ASSISTANT_HINT" desc="Explanation shown in the archive side panel's assistant view before anything has been asked. Pi is the name of an AI agent program the user installed.">
+        Ask about what this tab archived or replayed, such as “Why are images missing?” The assistant is Pi, running on this computer with your Pi login. It can read this tab's requests, and nothing else.
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_ASSISTANT_PLACEHOLDER" desc="Placeholder of the box in the archive side panel where the user types a question for the AI assistant.">
+        Ask about this tab's requests
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_ASK" desc="Button in the archive side panel that sends the user's question to the AI assistant.">
+        Ask
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_STOP_AGENT" desc="Button in the archive side panel that stops the AI assistant's answer.">
+        Stop
+      </message>
       <message name="IDS_ARCHIVE_SIDE_PANEL_CAPTURED_AT" desc="Line in the tooltip of a replayed request in the archive side panel, giving when the response it was answered with was captured.">
         Captured <ph name="MOMENT">$1<ex>10/30/2026, 10:56:05 PM</ex></ph>
       </message>

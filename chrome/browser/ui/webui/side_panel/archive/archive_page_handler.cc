@@ -14,6 +14,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/numerics/safe_conversions.h"
 #include "chrome/browser/platform_util.h"
+#include "chrome/browser/ui/webui/side_panel/archive/archive_agent_queries.h"
 #include "chrome/browser/wacz_replay/replay_partition.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -28,6 +29,8 @@
 
 namespace {
 
+using archive_side_panel::mojom::AgentEvent;
+using archive_side_panel::mojom::AgentEventKind;
 using archive_side_panel::mojom::CaptureState;
 using archive_side_panel::mojom::CaptureStatus;
 using archive_side_panel::mojom::CaptureStatusPtr;
@@ -209,6 +212,43 @@ void ArchivePageHandler::ShowDirectory() {
   }
   platform_util::OpenItem(Profile::FromWebUI(&*web_ui_), last_directory_,
                           platform_util::OPEN_FOLDER, base::DoNothing());
+}
+
+void ArchivePageHandler::AskAgent(const std::string& question) {
+  if (!agent_) {
+    agent_ = std::make_unique<archive_agent::ArchiveAgent>(*this);
+  }
+  agent_->Ask(question);
+}
+
+void ArchivePageHandler::StopAgent() {
+  if (agent_) {
+    agent_->Stop();
+  }
+}
+
+void ArchivePageHandler::OnAgentText(const std::string& text) {
+  page_->OnAgentEvent(AgentEvent::New(AgentEventKind::kText, text));
+}
+
+void ArchivePageHandler::OnAgentToolCall(const std::string& tool,
+                                         const std::string& arguments) {
+  page_->OnAgentEvent(
+      AgentEvent::New(AgentEventKind::kToolCall,
+                      arguments == "{}" ? tool : tool + " " + arguments));
+}
+
+void ArchivePageHandler::OnAgentIdle() {
+  page_->OnAgentEvent(AgentEvent::New(AgentEventKind::kIdle, std::string()));
+}
+
+void ArchivePageHandler::OnAgentError(const std::string& message) {
+  page_->OnAgentEvent(AgentEvent::New(AgentEventKind::kError, message));
+}
+
+std::string ArchivePageHandler::AnswerQuery(const std::string& tool,
+                                            const base::DictValue& params) {
+  return AnswerArchiveQuery(GetTabContents(), tool, params);
 }
 
 void ArchivePageHandler::OnCaptureChanged(content::WebContents* web_contents) {

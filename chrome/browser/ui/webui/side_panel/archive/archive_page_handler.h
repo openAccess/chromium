@@ -5,9 +5,13 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_SIDE_PANEL_ARCHIVE_ARCHIVE_PAGE_HANDLER_H_
 #define CHROME_BROWSER_UI_WEBUI_SIDE_PANEL_ARCHIVE_ARCHIVE_PAGE_HANDLER_H_
 
+#include <memory>
+#include <string>
+
 #include "base/callback_list.h"
 #include "base/files/file_path.h"
 #include "base/memory/raw_ref.h"
+#include "chrome/browser/archive_agent/archive_agent.h"
 #include "chrome/browser/ui/webui/side_panel/archive/archive.mojom.h"
 #include "chrome/browser/wacz_replay/replay_log.h"
 #include "chrome/browser/warc_tab_capture.h"
@@ -34,7 +38,8 @@ class TabInterface;
 // asks its archive for and what the archive answers.
 class ArchivePageHandler : public archive_side_panel::mojom::PageHandler,
                            public WarcTabCapture::Observer,
-                           public ReplayLog::Observer {
+                           public ReplayLog::Observer,
+                           public archive_agent::ArchiveAgent::Delegate {
  public:
   ArchivePageHandler(
       mojo::PendingReceiver<archive_side_panel::mojom::PageHandler> receiver,
@@ -51,6 +56,8 @@ class ArchivePageHandler : public archive_side_panel::mojom::PageHandler,
   void StartArchiving() override;
   void StopArchiving() override;
   void ShowDirectory() override;
+  void AskAgent(const std::string& question) override;
+  void StopAgent() override;
 
   // WarcTabCapture::Observer:
   void OnCaptureChanged(content::WebContents* web_contents) override;
@@ -61,6 +68,15 @@ class ArchivePageHandler : public archive_side_panel::mojom::PageHandler,
   void OnReplayStarted(content::WebContents* web_contents) override;
   void OnReplayRequest(content::WebContents* web_contents,
                        const warc::ReplayOutcome& request) override;
+
+  // archive_agent::ArchiveAgent::Delegate:
+  void OnAgentText(const std::string& text) override;
+  void OnAgentToolCall(const std::string& tool,
+                       const std::string& arguments) override;
+  void OnAgentIdle() override;
+  void OnAgentError(const std::string& message) override;
+  std::string AnswerQuery(const std::string& tool,
+                          const base::DictValue& params) override;
 
  private:
   // The tab the panel belongs to; null outside one.
@@ -90,6 +106,9 @@ class ArchivePageHandler : public archive_side_panel::mojom::PageHandler,
   const raw_ref<content::WebUI> web_ui_;
   base::CallbackListSubscription will_discard_contents_subscription_;
   base::FilePath last_directory_;
+
+  // The assistant, once asked something. It lasts as long as the panel.
+  std::unique_ptr<archive_agent::ArchiveAgent> agent_;
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_SIDE_PANEL_ARCHIVE_ARCHIVE_PAGE_HANDLER_H_

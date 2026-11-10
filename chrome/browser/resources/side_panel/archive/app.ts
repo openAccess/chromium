@@ -10,14 +10,22 @@ import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
-import type {BrowserProxy, CaptureStatus, Exchange} from './archive.mojom-webui.js';
-import {browserProxyFactory, CaptureState} from './archive.mojom-webui.js';
+import type {AgentEvent, BrowserProxy, CaptureStatus, Exchange} from './archive.mojom-webui.js';
+import {AgentEventKind, browserProxyFactory, CaptureState} from './archive.mojom-webui.js';
 
 // The most rows drawn at once. The panel keeps every exchange the browser
 // sends, and draws the latest of those that pass the filter.
 const MAX_ROWS = 2000;
 
 export type PanelState = 'none'|'starting'|'archiving'|'stopped'|'replaying';
+
+export type PanelView = 'requests'|'assistant';
+
+// One entry in the conversation with the assistant.
+export interface TranscriptItem {
+  kind: 'user'|'assistant'|'tool'|'error';
+  text: string;
+}
 
 export class ArchiveAppElement extends CrLitElement {
   static get is() {
@@ -42,6 +50,10 @@ export class ArchiveAppElement extends CrLitElement {
       momentMs_: {type: Number},
       exchanges_: {type: Array},
       filter_: {type: String},
+      view_: {type: String},
+      transcript_: {type: Array},
+      agentBusy_: {type: Boolean},
+      question_: {type: String},
     };
   }
 
@@ -53,6 +65,10 @@ export class ArchiveAppElement extends CrLitElement {
   protected accessor momentMs_: number = 0;
   protected accessor exchanges_: Exchange[] = [];
   protected accessor filter_: string = '';
+  protected accessor view_: PanelView = 'requests';
+  protected accessor transcript_: TranscriptItem[] = [];
+  protected accessor agentBusy_: boolean = false;
+  protected accessor question_: string = '';
 
   private proxy_: BrowserProxy = browserProxyFactory.getInstance();
   private listenerIds_: number[] = [];
@@ -72,6 +88,8 @@ export class ArchiveAppElement extends CrLitElement {
           (status: CaptureStatus) => this.onCaptureChanged_(status)),
       router.onExchangeRecorded.addListener(
           (exchange: Exchange) => this.onExchangeRecorded_(exchange)),
+      router.onAgentEvent.addListener(
+          (event: AgentEvent) => this.onAgentEvent_(event)),
     ];
     this.fetchCapture_();
     this.proxy_.handler.showUI();
@@ -175,6 +193,95 @@ export class ArchiveAppElement extends CrLitElement {
 
   protected onShowFolderClick_() {
     this.proxy_.handler.showDirectory();
+  }
+
+  protected onShowRequestsClick_() {
+    this.view_ = 'requests';
+  }
+
+  protected onShowAssistantClick_() {
+    this.view_ = 'assistant';
+    this.updateComplete.then(() => {
+      this.shadowRoot?.querySelector<HTMLElement>('#question')?.focus();
+    });
+  }
+
+  protected onQuestionInput_(e: Event) {
+    this.question_ = (e.target as HTMLTextAreaElement).value;
+  }
+
+  protected onQuestionKeydown_(e: KeyboardEvent) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      this.onAskClick_();
+    }
+  }
+
+  protected onAskClick_() {
+    const question = this.question_.trim();
+    if (!question || this.agentBusy_) {
+      return;
+    }
+    this.question_ = '';
+    this.agentBusy_ = true;
+    this.addToTranscript_({kind: 'user', text: question});
+    this.proxy_.handler.askAgent(question);
+  }
+
+  protected onStopAgentClick_() {
+    this.proxy_.handler.stopAgent();
+  }
+
+  private onAgentEvent_(event: AgentEvent) {
+    switch (event.kind) {
+      case AgentEventKind.kText: {
+        const last = this.transcript_[this.transcript_.length - 1];
+        if (last && last.kind === 'assistant') {
+          // The answer streams in; it is one entry however many pieces.
+          this.transcript_ = [
+            ...this.transcript_.slice(0, -1),
+            {kind: 'assistant', text: last.text + event.text},
+          ];
+          this.scrollTranscript_();
+        } else {
+          this.addToTranscript_({kind: 'assistant', text: event.text});
+        }
+        break;
+      }
+      case AgentEventKind.kToolCall:
+        this.addToTranscript_({kind: 'tool', text: event.text});
+        break;
+      case AgentEventKind.kIdle:
+        this.agentBusy_ = false;
+        break;
+      case AgentEventKind.kError:
+        this.addToTranscript_({kind: 'error', text: event.text});
+        break;
+    }
+  }
+
+  private addToTranscript_(item: TranscriptItem) {
+    this.transcript_ = [...this.transcript_, item];
+    this.scrollTranscript_();
+  }
+
+  // Keeps the latest of the conversation in view, unless the user has
+  // scrolled back from it.
+  private scrollTranscript_() {
+    const transcript =
+        this.shadowRoot?.querySelector<HTMLElement>('#transcript');
+    if (transcript &&
+        transcript.scrollTop + transcript.clientHeight <
+            transcript.scrollHeight - 24) {
+      return;
+    }
+    this.updateComplete.then(() => {
+      const scroller =
+          this.shadowRoot?.querySelector<HTMLElement>('#transcript');
+      if (scroller) {
+        scroller.scrollTop = scroller.scrollHeight;
+      }
+    });
   }
 
   protected onFilterInput_(e: Event) {

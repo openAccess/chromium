@@ -34,9 +34,22 @@ export function getHtml(this: ArchiveAppElement) {
       $i18n{showFolder}
     </cr-button>`}
   </div>
-  <input id="filter" type="search" placeholder="${this.filterPlaceholder_()}"
-      .value="${this.filter_}" @input="${this.onFilterInput_}">
+  <div id="views" role="tablist">
+    <button class="view" role="tab" id="requestsView"
+        aria-selected="${this.view_ === 'requests'}"
+        @click="${this.onShowRequestsClick_}">
+      $i18n{requestsView}
+    </button>
+    <button class="view" role="tab" id="assistantView"
+        aria-selected="${this.view_ === 'assistant'}"
+        @click="${this.onShowAssistantClick_}">
+      $i18n{assistantView}
+    </button>
+  </div>
 </div>
+${this.view_ === 'requests' ? html`
+<input id="filter" type="search" placeholder="${this.filterPlaceholder_()}"
+    .value="${this.filter_}" @input="${this.onFilterInput_}">
 <div id="table">
   <div class="row head">
     <span>$i18n{statusColumn}</span><span>$i18n{typeColumn}</span>
@@ -63,7 +76,26 @@ export function getHtml(this: ArchiveAppElement) {
         <span class="method">${exchange.method}</span>` : ''}${
           this.urlText_(exchange)}</span>
     </div>`)}
+</div>` : html`
+<div id="transcript">
+  ${this.transcript_.length === 0 ? html`
+    <div class="hint">$i18n{assistantHint}</div>` : ''}
+  ${this.transcript_.map(item => html`
+    <div class="turn ${item.kind}">${item.text}</div>`)}
+  ${this.agentBusy_ ? html`<div class="turn working">…</div>` : ''}
 </div>
+<div id="ask">
+  <textarea id="question" rows="2" placeholder="$i18n{assistantPlaceholder}"
+      .value="${this.question_}" @input="${this.onQuestionInput_}"
+      @keydown="${this.onQuestionKeydown_}"></textarea>
+  ${this.agentBusy_ ? html`
+    <cr-button @click="${this.onStopAgentClick_}">$i18n{stopAgent}</cr-button>
+  ` : html`
+    <cr-button class="action-button" ?disabled="${!this.question_.trim()}"
+        @click="${this.onAskClick_}">
+      $i18n{ask}
+    </cr-button>`}
+</div>`}
 <!--_html_template_end_-->`;
   // clang-format on
 }

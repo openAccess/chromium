@@ -54,6 +54,12 @@ ArchiveSidePanelUI::ArchiveSidePanelUI(content::WebUI* web_ui)
       {"failed", IDS_ARCHIVE_SIDE_PANEL_FAILED},
       {"answeredBy", IDS_ARCHIVE_SIDE_PANEL_ANSWERED_BY},
       {"capturedAt", IDS_ARCHIVE_SIDE_PANEL_CAPTURED_AT},
+      {"requestsView", IDS_ARCHIVE_SIDE_PANEL_REQUESTS_VIEW},
+      {"assistantView", IDS_ARCHIVE_SIDE_PANEL_ASSISTANT_VIEW},
+      {"assistantHint", IDS_ARCHIVE_SIDE_PANEL_ASSISTANT_HINT},
+      {"assistantPlaceholder", IDS_ARCHIVE_SIDE_PANEL_ASSISTANT_PLACEHOLDER},
+      {"ask", IDS_ARCHIVE_SIDE_PANEL_ASK},
+      {"stopAgent", IDS_ARCHIVE_SIDE_PANEL_STOP_AGENT},
   };
   source->AddLocalizedStrings(kStrings);
   webui::SetupWebUIDataSource(source, kSidePanelArchiveResources,
