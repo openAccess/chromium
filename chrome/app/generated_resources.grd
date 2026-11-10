@@ -12400,6 +12400,36 @@ Check your passwords anytime in <ph name="GOOGLE_PASSWORD_MANAGER">$1<ex>Google 
       <message name="IDS_ARCHIVE_SIDE_PANEL_OLDER_NOT_SHOWN" desc="Note at the top of the archive side panel's list when the earliest recorded requests are no longer listed. They are still in the archive.">
         <ph name="COUNT">$1<ex>1,204</ex></ph> earlier requests are archived but not listed.
       </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_REPLAYING" desc="State shown in the archive side panel for a tab that is replaying a web archive rather than loading pages from the web.">
+        Replaying
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_REPLAYING_AS_OF" desc="State shown in the archive side panel for a tab replaying a web archive, with the date and time of the capture it replays.">
+        Replaying as of <ph name="MOMENT">$1<ex>10/30/2026, 10:56:05 PM</ex></ph>
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_REPLAY_TOTALS" desc="Summary in the archive side panel of how many requests a replaying tab made, how many the archive had nothing for, and how large the bodies it served are.">
+        <ph name="COUNT">$1<ex>113</ex></ph> requests · <ph name="MISSING">$2<ex>4</ex></ph> missing · <ph name="SIZE">$3<ex>1.7 MB</ex></ph>
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_REPLAY_FILTER" desc="Placeholder of the box in the archive side panel that filters a replaying tab's requests. 'missing' is a word the user can type to list only the requests the archive could not answer; translate it the same way the panel's 'missing' label is translated.">
+        Filter, e.g. missing
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_SHOW_ARCHIVE" desc="Button in the archive side panel that shows the web archive a tab is replaying in the file manager.">
+        Show archive
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISSING_STATUS" desc="Very short label (about 4 characters) in the Status column of the archive side panel for a request the web archive has no response for.">
+        miss
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISSING" desc="Tooltip in the archive side panel for a request the web archive has no response for. Replay never goes to the web, so the request failed.">
+        Not in the archive, so not loaded. Replay never goes to the web.
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_FAILED" desc="Tooltip in the archive side panel for a replayed request that failed for a reason other than being missing from the archive, with the network error's name.">
+        Failed: <ph name="ERROR">$1<ex>ERR_TOO_MANY_REDIRECTS</ex></ph>
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_ANSWERED_BY" desc="Tooltip in the archive side panel for a replayed request that the archive answered with a capture of a different URL, the nearest one it had.">
+        Answered by the capture of <ph name="URL">$1<ex>https://example.com/data.json?cb=111</ex></ph>
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_CAPTURED_AT" desc="Line in the tooltip of a replayed request in the archive side panel, giving when the response it was answered with was captured.">
+        Captured <ph name="MOMENT">$1<ex>10/30/2026, 10:56:05 PM</ex></ph>
+      </message>
 
       <!-- Tab Context Menu -->
       <if expr="not use_titlecase">

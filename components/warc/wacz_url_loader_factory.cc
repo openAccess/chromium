@@ -17,10 +17,12 @@
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/escape.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_util.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/task/task_traits.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
+#include "components/warc/cdxj.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/system/data_pipe.h"
@@ -191,11 +193,13 @@ class WaczUrlLoader : public network::mojom::URLLoader {
                 mojo::PendingRemote<network::mojom::URLLoaderClient> client,
                 scoped_refptr<WaczArchive> archive,
                 std::string timestamp,
+                ReplayReporter reporter,
                 const network::ResourceRequest& request)
       : receiver_(this, std::move(loader)),
         client_(std::move(client)),
         archive_(std::move(archive)),
         timestamp_(std::move(timestamp)),
+        reporter_(std::move(reporter)),
         request_(request) {
     receiver_.set_disconnect_handler(
         base::BindOnce(&WaczUrlLoader::DeleteSelf, base::Unretained(this)));
@@ -228,6 +232,7 @@ class WaczUrlLoader : public network::mojom::URLLoader {
     // The client may only move the redirect within the origin it points to.
     if (new_url &&
         !url::Origin::Create(redirect_->new_url).IsSameOriginWith(*new_url)) {
+      ReportFailure(*new_url, net::ERR_UNSAFE_REDIRECT);
       Fail(net::ERR_UNSAFE_REDIRECT);
       return;
     }
@@ -253,6 +258,7 @@ class WaczUrlLoader : public network::mojom::URLLoader {
     // to anywhere else is in it -- as the network would not follow it there
     // either.
     if (!request_.url.SchemeIsHTTPOrHTTPS()) {
+      ReportFailure(request_.url, net::ERR_UNSAFE_REDIRECT);
       Fail(net::ERR_UNSAFE_REDIRECT);
       return;
     }
@@ -270,6 +276,7 @@ class WaczUrlLoader : public network::mojom::URLLoader {
       }
     }
     if (!response) {
+      ReportMissing();
       // Nothing else to offer, and nowhere else to look. Saying so is the
       // point: a resource the archive lacks must be seen to be missing. A
       // document that is missing needs somewhere to say so; a subresource does
@@ -291,11 +298,65 @@ class WaczUrlLoader : public network::mojom::URLLoader {
       Redirect(std::move(*response), request_.url.Resolve(location));
       return;
     }
+    ReportServed(*response);
     Respond(std::move(*response));
   }
 
+  // What is reported of the request as it now stands.
+  ReplayOutcome Outcome() const {
+    ReplayOutcome outcome;
+    outcome.url = request_.url;
+    outcome.method = request_.method;
+    outcome.destination = network::RequestDestinationToString(
+        request_.destination,
+        network::EmptyRequestDestinationOption::kUseTheEmptyString);
+    outcome.time = base::Time::Now();
+    return outcome;
+  }
+
+  void ReportServed(const ArchivedResponse& response) {
+    if (!reporter_) {
+      return;
+    }
+    ReplayOutcome outcome = Outcome();
+    outcome.status_code = response.headers->response_code();
+    response.headers->GetMimeType(&outcome.mime_type);
+    outcome.mime_type = base::ToLowerASCII(outcome.mime_type);
+    outcome.body_bytes =
+        request_.method == net::HttpRequestHeaders::kHeadMethod
+            ? 0
+            : response.body.size();
+    outcome.captured = ParseIndexTimestamp(response.timestamp);
+    if (response.url != request_.url.spec()) {
+      outcome.captured_url = GURL(response.url);
+    }
+    reporter_.Run(outcome);
+  }
+
+  void ReportMissing() {
+    if (!reporter_) {
+      return;
+    }
+    ReplayOutcome outcome = Outcome();
+    outcome.missing = true;
+    reporter_.Run(outcome);
+  }
+
+  // A request that went no further, at `url`, for `net_error`.
+  void ReportFailure(const GURL& url, int net_error) {
+    if (!reporter_) {
+      return;
+    }
+    ReplayOutcome outcome = Outcome();
+    outcome.url = url;
+    outcome.net_error = net_error;
+    reporter_.Run(outcome);
+  }
+
   void Redirect(ArchivedResponse response, const GURL& location) {
+    ReportServed(response);
     if (!location.is_valid()) {
+      ReportFailure(request_.url, net::ERR_INVALID_REDIRECT);
       Fail(net::ERR_INVALID_REDIRECT);
       return;
     }
@@ -303,6 +364,7 @@ class WaczUrlLoader : public network::mojom::URLLoader {
     // two redirects captured at different moments, or found as each other's
     // nearest -- so a chain is cut off where the network would cut it.
     if (redirects_left_-- == 0) {
+      ReportFailure(location, net::ERR_TOO_MANY_REDIRECTS);
       Fail(net::ERR_TOO_MANY_REDIRECTS);
       return;
     }
@@ -399,6 +461,7 @@ class WaczUrlLoader : public network::mojom::URLLoader {
 
   const scoped_refptr<WaczArchive> archive_;
   const std::string timestamp_;
+  const ReplayReporter reporter_;
 
   // The request as it now stands, changed by each redirect followed.
   network::ResourceRequest request_;
@@ -414,6 +477,11 @@ class WaczUrlLoader : public network::mojom::URLLoader {
 };
 
 }  // namespace
+
+ReplayOutcome::ReplayOutcome() = default;
+ReplayOutcome::ReplayOutcome(const ReplayOutcome&) = default;
+ReplayOutcome& ReplayOutcome::operator=(const ReplayOutcome&) = default;
+ReplayOutcome::~ReplayOutcome() = default;
 
 WaczArchiveSource::WaczArchiveSource(base::FilePath path)
     : collection_(WaczCollection::Open(
@@ -449,33 +517,37 @@ WaczArchive::WaczArchive(base::FilePath path)
 WaczArchive::~WaczArchive() = default;
 
 mojo::PendingRemote<network::mojom::URLLoaderFactory>
-WaczArchive::CreateFactory(const std::string& timestamp) {
+WaczArchive::CreateFactory(const std::string& timestamp,
+                           ReplayReporter reporter) {
   mojo::PendingRemote<network::mojom::URLLoaderFactory> pending_remote;
   BindFactory(timestamp, pending_remote.InitWithNewPipeAndPassReceiver(),
-              mojo::NullRemote());
+              mojo::NullRemote(), std::move(reporter));
   return pending_remote;
 }
 
 void WaczArchive::BindFactory(
     const std::string& timestamp,
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
-    mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough) {
+    mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough,
+    ReplayReporter reporter) {
   // Deletes itself once nothing holds a receiver, as its base class arranges.
   base::MakeSelfDeleting<WaczUrlLoaderFactory>(
       base::WrapRefCounted(this), timestamp, std::move(passthrough),
-      std::move(receiver));
+      std::move(reporter), std::move(receiver));
 }
 
 WaczUrlLoaderFactory::WaczUrlLoaderFactory(
     scoped_refptr<WaczArchive> archive,
     const std::string& timestamp,
     mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough,
+    ReplayReporter reporter,
     mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
     base::SelfDeletingPassKey key)
     : network::SelfDeletingURLLoaderFactory(std::move(receiver), key),
       archive_(std::move(archive)),
       timestamp_(timestamp),
-      passthrough_(std::move(passthrough)) {}
+      passthrough_(std::move(passthrough)),
+      reporter_(std::move(reporter)) {}
 
 WaczUrlLoaderFactory::~WaczUrlLoaderFactory() = default;
 
@@ -505,7 +577,7 @@ void WaczUrlLoaderFactory::CreateLoaderAndStart(
 
   // Deletes itself once it has answered, or once the client stops listening.
   (new WaczUrlLoader(std::move(loader), std::move(client), archive_, timestamp_,
-                     request))
+                     reporter_, request))
       ->Start();
 }
 

@@ -21,6 +21,7 @@ source_set("archive") {
     "//base",
     "//chrome/browser:warc_capture",
     "//chrome/browser/ui/webui/top_chrome",
+    "//chrome/browser/wacz_replay:log",
     "//content/public/browser",
     "//mojo/public/cpp/bindings",
   ]
@@ -40,8 +41,10 @@ source_set("impl") {
     "//chrome/browser/ui/browser_window",
     "//chrome/browser/ui/tabs:tab_strip",
     "//chrome/browser/ui/webui:webui_util",
+    "//chrome/browser/wacz_replay:partition",
     "//chrome/common",
     "//components/tabs:public",
+    "//net",
     "//ui/base",
     "//ui/webui",
   ]

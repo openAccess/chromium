@@ -83,6 +83,7 @@
 #include "chrome/browser/ui/web_applications/web_app_tabbed_utils.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
+#include "chrome/browser/wacz_replay/replay_partition.h"
 #include "chrome/browser/warc_tab_capture.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
@@ -2999,7 +3000,11 @@ bool TabStripModel::IsContextMenuCommandEnabled(
       });
     }
 
+    // A replay tab is answered out of an archive; archiving it would start it
+    // over on the web.
     case CommandToggleWarcCapture:
+      return !wacz_replay::IsReplayTab(GetWebContentsAt(context_index));
+
     case CommandShowArchivePanel:
       return true;
 
@@ -3216,7 +3221,8 @@ void TabStripModel::ExecuteContextMenuCommand(int context_index,
           WarcTabCapture::Stop(contents);
           continue;
         }
-        if (WarcTabCapture::IsCapturing(contents)) {
+        if (WarcTabCapture::IsCapturing(contents) ||
+            wacz_replay::IsReplayTab(contents)) {
           continue;
         }
         // Archived from an empty state, a tab is replaced where it stands by

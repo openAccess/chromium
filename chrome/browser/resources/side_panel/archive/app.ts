@@ -17,7 +17,7 @@ import {browserProxyFactory, CaptureState} from './archive.mojom-webui.js';
 // sends, and draws the latest of those that pass the filter.
 const MAX_ROWS = 2000;
 
-export type PanelState = 'none'|'starting'|'archiving'|'stopped';
+export type PanelState = 'none'|'starting'|'archiving'|'stopped'|'replaying';
 
 export class ArchiveAppElement extends CrLitElement {
   static get is() {
@@ -38,6 +38,8 @@ export class ArchiveAppElement extends CrLitElement {
       directory_: {type: String},
       exchangeCount_: {type: Number},
       bodyBytes_: {type: Number},
+      missingCount_: {type: Number},
+      momentMs_: {type: Number},
       exchanges_: {type: Array},
       filter_: {type: String},
     };
@@ -47,6 +49,8 @@ export class ArchiveAppElement extends CrLitElement {
   protected accessor directory_: string = '';
   protected accessor exchangeCount_: number = 0;
   protected accessor bodyBytes_: number = 0;
+  protected accessor missingCount_: number = 0;
+  protected accessor momentMs_: number = 0;
   protected accessor exchanges_: Exchange[] = [];
   protected accessor filter_: string = '';
 
@@ -115,13 +119,23 @@ export class ArchiveAppElement extends CrLitElement {
       this.state_ = this.captureNumber_ ? 'stopped' : 'none';
       return;
     }
-    this.state_ =
-        status.state === CaptureState.kArchiving ? 'archiving' : 'starting';
+    switch (status.state) {
+      case CaptureState.kReplaying:
+        this.state_ = 'replaying';
+        break;
+      case CaptureState.kArchiving:
+        this.state_ = 'archiving';
+        break;
+      default:
+        this.state_ = 'starting';
+    }
     if (status.directory) {
       this.directory_ = status.directory;
     }
     this.exchangeCount_ = status.exchangeCount;
     this.bodyBytes_ = status.bodyBytes;
+    this.missingCount_ = status.missingCount;
+    this.momentMs_ = status.momentMs;
   }
 
   private onExchangeRecorded_(exchange: Exchange) {
@@ -135,6 +149,9 @@ export class ArchiveAppElement extends CrLitElement {
     this.lastIndex_ = exchange.index;
     this.exchangeCount_ = Math.max(this.exchangeCount_, exchange.index);
     this.bodyBytes_ += exchange.bodyBytes;
+    if (exchange.missing) {
+      ++this.missingCount_;
+    }
     const table = this.shadowRoot?.querySelector<HTMLElement>('#table');
     const atBottom = !table ||
         table.scrollTop + table.clientHeight >= table.scrollHeight - 4;
@@ -172,6 +189,11 @@ export class ArchiveAppElement extends CrLitElement {
         return loadTimeData.getString('archiving');
       case 'stopped':
         return loadTimeData.getString('stopped');
+      case 'replaying':
+        return this.momentMs_ ?
+            loadTimeData.getStringF(
+                'replayingAsOf', new Date(this.momentMs_).toLocaleString()) :
+            loadTimeData.getString('replaying');
       default:
         return loadTimeData.getString('notArchiving');
     }
@@ -181,7 +203,21 @@ export class ArchiveAppElement extends CrLitElement {
     return this.state_ === 'starting' || this.state_ === 'archiving';
   }
 
+  protected isReplaying_(): boolean {
+    return this.state_ === 'replaying';
+  }
+
+  protected filterPlaceholder_(): string {
+    return loadTimeData.getString(
+        this.isReplaying_() ? 'replayFilter' : 'filter');
+  }
+
   protected totalsText_(): string {
+    if (this.isReplaying_()) {
+      return loadTimeData.getStringF(
+          'replayTotals', this.exchangeCount_.toLocaleString(),
+          this.missingCount_.toLocaleString(), formatBytes(this.bodyBytes_));
+    }
     return loadTimeData.getStringF(
         'totals', this.exchangeCount_.toLocaleString(),
         formatBytes(this.bodyBytes_));
@@ -195,7 +231,10 @@ export class ArchiveAppElement extends CrLitElement {
         this.exchanges_ :
         this.exchanges_.filter(exchange => {
           const text = `${exchange.method} ${exchange.statusCode} ${
-                           exchange.mimeType} ${exchange.url}`.toLowerCase();
+                           exchange.mimeType} ${exchange.destination} ${
+                           exchange.missing ? 'missing' : ''} ${
+                           exchange.error} ${exchange.capturedUrl ? 'closest' : ''} ${
+                           exchange.url}`.toLowerCase();
           return terms.every(term => text.includes(term));
         });
     return matching.slice(-MAX_ROWS);
@@ -208,20 +247,43 @@ export class ArchiveAppElement extends CrLitElement {
   }
 
   protected statusText_(exchange: Exchange): string {
+    if (exchange.missing) {
+      return loadTimeData.getString('missingStatus');
+    }
+    if (exchange.error) {
+      return '✕';
+    }
     return exchange.statusCode ? String(exchange.statusCode) : '—';
   }
 
   protected statusTitle_(exchange: Exchange): string {
+    if (exchange.missing) {
+      return loadTimeData.getString('missing');
+    }
+    if (exchange.error) {
+      return loadTimeData.getStringF('failed', exchange.error);
+    }
     return exchange.statusCode ? '' : loadTimeData.getString('requestOnly');
   }
 
+  // The media subtype; for a request nothing answered, what it was wanted for.
   protected typeText_(exchange: Exchange): string {
+    if (!exchange.mimeType) {
+      return exchange.destination || '—';
+    }
     const subtype = exchange.mimeType.split('/')[1] || exchange.mimeType;
     return subtype.replace(/^x-/, '').replace(/\+.*$/, '');
   }
 
   protected sizeText_(exchange: Exchange): string {
+    if (exchange.missing || exchange.error) {
+      return '—';
+    }
     return (exchange.truncated ? '⚠ ' : '') + formatBytes(exchange.bodyBytes);
+  }
+
+  protected answeredByTitle_(exchange: Exchange): string {
+    return loadTimeData.getStringF('answeredBy', exchange.capturedUrl);
   }
 
   protected sizeTitle_(exchange: Exchange): string {
@@ -234,12 +296,23 @@ export class ArchiveAppElement extends CrLitElement {
   }
 
   protected rowTitle_(exchange: Exchange): string {
-    return `${exchange.method} ${exchange.url}\n${
-        new Date(exchange.timeMs).toLocaleTimeString()}`;
+    const lines = [
+      `${exchange.method} ${exchange.url}`,
+      new Date(exchange.timeMs).toLocaleTimeString(),
+    ];
+    if (exchange.capturedUrl) {
+      lines.push(this.answeredByTitle_(exchange));
+    }
+    if (exchange.capturedMs) {
+      lines.push(loadTimeData.getStringF(
+          'capturedAt', new Date(exchange.capturedMs).toLocaleString()));
+    }
+    return lines.join('\n');
   }
 
   protected isError_(exchange: Exchange): boolean {
-    return exchange.statusCode === 0 || exchange.statusCode >= 400;
+    return exchange.missing || !!exchange.error || exchange.statusCode === 0 ||
+        exchange.statusCode >= 400;
   }
 }
 

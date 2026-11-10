@@ -135,6 +135,7 @@ source_set("side_panel") {
     "//chrome/browser/ui/webui/side_panel/bookmarks",
     "//chrome/browser:warc_capture",
     "//chrome/browser/ui/webui/side_panel/archive",
+    "//chrome/browser/wacz_replay:log",
     "//chrome/browser/ui/webui/side_panel/comments",
     "//chrome/browser/ui/webui/side_panel/history",
     "//chrome/browser/ui/webui/side_panel/history_clusters",

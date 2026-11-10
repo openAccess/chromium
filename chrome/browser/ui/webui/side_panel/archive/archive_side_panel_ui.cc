@@ -44,6 +44,16 @@ ArchiveSidePanelUI::ArchiveSidePanelUI(content::WebUI* web_ui)
       {"typeColumn", IDS_ARCHIVE_SIDE_PANEL_TYPE_COLUMN},
       {"sizeColumn", IDS_ARCHIVE_SIDE_PANEL_SIZE_COLUMN},
       {"urlColumn", IDS_ARCHIVE_SIDE_PANEL_URL_COLUMN},
+      {"replaying", IDS_ARCHIVE_SIDE_PANEL_REPLAYING},
+      {"replayingAsOf", IDS_ARCHIVE_SIDE_PANEL_REPLAYING_AS_OF},
+      {"replayTotals", IDS_ARCHIVE_SIDE_PANEL_REPLAY_TOTALS},
+      {"replayFilter", IDS_ARCHIVE_SIDE_PANEL_REPLAY_FILTER},
+      {"showArchive", IDS_ARCHIVE_SIDE_PANEL_SHOW_ARCHIVE},
+      {"missingStatus", IDS_ARCHIVE_SIDE_PANEL_MISSING_STATUS},
+      {"missing", IDS_ARCHIVE_SIDE_PANEL_MISSING},
+      {"failed", IDS_ARCHIVE_SIDE_PANEL_FAILED},
+      {"answeredBy", IDS_ARCHIVE_SIDE_PANEL_ANSWERED_BY},
+      {"capturedAt", IDS_ARCHIVE_SIDE_PANEL_CAPTURED_AT},
   };
   source->AddLocalizedStrings(kStrings);
   webui::SetupWebUIDataSource(source, kSidePanelArchiveResources,

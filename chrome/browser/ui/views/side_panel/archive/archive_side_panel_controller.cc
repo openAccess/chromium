@@ -38,12 +38,14 @@ ArchiveSidePanelController::ArchiveSidePanelController(
                           base::Unretained(this)),
       /*default_content_width_callback=*/base::NullCallback()));
   WarcTabCapture::AddObserver(this);
+  ReplayLog::AddObserver(this);
 }
 
 // The tab's registry goes with the tab, straight after this, so the entry
 // whose callback points here is not left behind; other tab-scoped panels rely
 // on the same.
 ArchiveSidePanelController::~ArchiveSidePanelController() {
+  ReplayLog::RemoveObserver(this);
   WarcTabCapture::RemoveObserver(this);
 }
 
@@ -57,8 +59,25 @@ void ArchiveSidePanelController::OnCaptureChanged(
     return;
   }
   opened_for_capture_ = capture->serial();
-  // A tab archived from the back stays out of the way; its panel opens when
-  // asked for.
+  ShowIfActive();
+}
+
+void ArchiveSidePanelController::OnReplayStarted(
+    content::WebContents* web_contents) {
+  if (web_contents != tab_->GetContents()) {
+    return;
+  }
+  ReplayLog* log = ReplayLog::FromWebContents(web_contents);
+  if (!log || log->serial() == opened_for_replay_) {
+    return;
+  }
+  opened_for_replay_ = log->serial();
+  ShowIfActive();
+}
+
+void ArchiveSidePanelController::ShowIfActive() {
+  // A tab archived or replayed from the back stays out of the way; its panel
+  // opens when asked for.
   if (!tab_->IsActivated()) {
     return;
   }

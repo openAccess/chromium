@@ -20,6 +20,21 @@ struct Exchange {
   bool truncated;
   // When the exchange began, in milliseconds since the Unix epoch.
   double time_ms;
+
+  // The rest says how a replay answered; a capture leaves it empty.
+  //
+  // The archive held nothing for the request.
+  bool missing;
+  // Why the request failed other than by missing, as a net error's short
+  // name, or empty.
+  string error;
+  // What the page wanted it for, as Fetch names it: "document", "script"...
+  string destination;
+  // The URL of the capture that answered, where that is not `url`.
+  string captured_url;
+  // When the capture that answered was made, in milliseconds since the Unix
+  // epoch; 0 when nothing answered.
+  double captured_ms;
 };
 
 enum CaptureState {
@@ -27,17 +42,26 @@ enum CaptureState {
   // The capture's files are being opened; nothing is recorded yet.
   kStarting,
   kArchiving,
+  // The tab is answered out of an archive rather than the web.
+  kReplaying,
 };
 
 struct CaptureStatus {
   CaptureState state;
   // Changes with each capture the tab starts; 0 when not archiving.
   int32 capture_number;
-  // Where the archive and its page list are written; empty until known.
+  // Where the archive and its page list are written; empty until known. For
+  // a replay, the archive replayed.
   string directory;
-  // Every exchange written, including those no longer kept to show.
+  // Every exchange written, including those no longer kept to show. For a
+  // replay, every request answered or not.
   uint32 exchange_count;
   double body_bytes;
+  // For a replay: the requests the archive held nothing for, and the moment
+  // replayed, in milliseconds since the Unix epoch -- 0 when each URL is
+  // answered by its earliest capture.
+  uint32 missing_count;
+  double moment_ms;
 };
 
 // Used by the page to bootstrap communication with the browser.
@@ -61,7 +85,8 @@ interface PageHandler {
   // Stops archiving the tab and closes its archive.
   StopArchiving();
 
-  // Opens the capture's directory in the file manager.
+  // Opens the capture's directory in the file manager, or for a replay, the
+  // directory holding the archive.
   ShowDirectory();
 };
 

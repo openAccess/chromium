@@ -13,3 +13,19 @@ source_set("partition") {
 
   public_deps = [ "//content/public/browser" ]
 }
+
+# What each replay tab asked its archive for and what became of it, apart from
+# the rest of replay so that the UI showing it need not depend on
+# //chrome/browser.
+source_set("log") {
+  sources = [
+    "replay_log.cc",
+    "replay_log.h",
+  ]
+
+  public_deps = [
+    "//base",
+    "//components/warc:replay",
+    "//content/public/browser",
+  ]
+}

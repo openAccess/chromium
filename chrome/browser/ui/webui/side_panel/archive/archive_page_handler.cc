@@ -14,6 +14,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/numerics/safe_conversions.h"
 #include "chrome/browser/platform_util.h"
+#include "chrome/browser/wacz_replay/replay_partition.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -23,6 +24,7 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
+#include "net/base/net_errors.h"
 
 namespace {
 
@@ -36,7 +38,11 @@ WarcTabCapture* CaptureOf(content::WebContents* contents) {
   return contents ? WarcTabCapture::FromWebContents(contents) : nullptr;
 }
 
-CaptureStatusPtr StatusOf(WarcTabCapture* capture) {
+double ToMs(base::Time time) {
+  return time.is_null() ? 0 : time.InMillisecondsFSinceUnixEpoch();
+}
+
+CaptureStatusPtr CaptureStatusOf(WarcTabCapture* capture) {
   CaptureStatusPtr status = CaptureStatus::New();
   if (!capture) {
     status->state = CaptureState::kNotArchiving;
@@ -52,13 +58,55 @@ CaptureStatusPtr StatusOf(WarcTabCapture* capture) {
   return status;
 }
 
+// A replay tab's status. `log` is null for one that has asked for nothing yet.
+CaptureStatusPtr ReplayStatusOf(ReplayLog* log) {
+  CaptureStatusPtr status = CaptureStatus::New();
+  status->state = CaptureState::kReplaying;
+  if (!log) {
+    return status;
+  }
+  status->capture_number = log->serial();
+  status->directory = log->archive().AsUTF8Unsafe();
+  status->exchange_count =
+      base::saturated_cast<uint32_t>(log->request_count());
+  status->body_bytes = static_cast<double>(log->body_bytes());
+  status->missing_count = base::saturated_cast<uint32_t>(log->missing_count());
+  status->moment_ms = ToMs(log->moment());
+  return status;
+}
+
 ExchangePtr ToMojom(const WarcTabCapture::Exchange& exchange, size_t index) {
-  return Exchange::New(base::saturated_cast<uint32_t>(index),
-                       exchange.url.spec(), exchange.method,
-                       exchange.status_code, exchange.mime_type,
-                       static_cast<double>(exchange.body_bytes),
-                       exchange.truncated,
-                       exchange.time.InMillisecondsFSinceUnixEpoch());
+  ExchangePtr result = Exchange::New();
+  result->index = base::saturated_cast<uint32_t>(index);
+  result->url = exchange.url.spec();
+  result->method = exchange.method;
+  result->status_code = exchange.status_code;
+  result->mime_type = exchange.mime_type;
+  result->body_bytes = static_cast<double>(exchange.body_bytes);
+  result->truncated = exchange.truncated;
+  result->time_ms = ToMs(exchange.time);
+  return result;
+}
+
+ExchangePtr ToMojom(const warc::ReplayOutcome& request, size_t index) {
+  ExchangePtr result = Exchange::New();
+  result->index = base::saturated_cast<uint32_t>(index);
+  result->url = request.url.spec();
+  result->method = request.method;
+  result->status_code = request.status_code;
+  result->mime_type = request.mime_type;
+  result->body_bytes = static_cast<double>(request.body_bytes);
+  result->time_ms = ToMs(request.time);
+  result->missing = request.missing;
+  if (request.net_error != net::OK) {
+    result->error = net::ErrorToShortString(request.net_error);
+  }
+  result->destination = request.destination;
+  if (!request.captured_url.is_empty()) {
+    result->captured_url = request.captured_url.spec();
+  }
+  result->captured_ms = ToMs(request.captured);
+  return result;
 }
 
 }  // namespace
@@ -73,6 +121,7 @@ ArchivePageHandler::ArchivePageHandler(
       panel_ui_(panel_ui),
       web_ui_(web_ui) {
   WarcTabCapture::AddObserver(this);
+  ReplayLog::AddObserver(this);
   if (tabs::TabInterface* tab = GetTab()) {
     will_discard_contents_subscription_ =
         tab->RegisterWillDiscardContents(base::BindRepeating(
@@ -82,6 +131,7 @@ ArchivePageHandler::ArchivePageHandler(
 }
 
 ArchivePageHandler::~ArchivePageHandler() {
+  ReplayLog::RemoveObserver(this);
   WarcTabCapture::RemoveObserver(this);
 }
 
@@ -92,8 +142,19 @@ void ArchivePageHandler::ShowUI() {
 }
 
 void ArchivePageHandler::GetCapture(GetCaptureCallback callback) {
-  WarcTabCapture* capture = CaptureOf(GetTabContents());
+  content::WebContents* contents = GetTabContents();
   std::vector<ExchangePtr> exchanges;
+  if (contents && wacz_replay::IsReplayTab(contents)) {
+    if (ReplayLog* log = ReplayLog::FromWebContents(contents)) {
+      size_t index = log->request_count() - log->requests().size();
+      for (const warc::ReplayOutcome& request : log->requests()) {
+        exchanges.push_back(ToMojom(request, ++index));
+      }
+    }
+    std::move(callback).Run(StatusOf(contents), std::move(exchanges));
+    return;
+  }
+  WarcTabCapture* capture = CaptureOf(contents);
   if (capture) {
     RememberDirectory(capture);
     // The kept exchanges are the most recent; the first of them is numbered
@@ -103,13 +164,16 @@ void ArchivePageHandler::GetCapture(GetCaptureCallback callback) {
       exchanges.push_back(ToMojom(exchange, ++index));
     }
   }
-  std::move(callback).Run(StatusOf(capture), std::move(exchanges));
+  std::move(callback).Run(StatusOf(contents), std::move(exchanges));
 }
 
 void ArchivePageHandler::StartArchiving() {
   tabs::TabInterface* tab = GetTab();
   content::WebContents* contents = GetTabContents();
-  if (!contents || WarcTabCapture::IsCapturing(contents)) {
+  // A replay tab is answered out of an archive, and archiving it would mean
+  // starting it over on the web.
+  if (!contents || WarcTabCapture::IsCapturing(contents) ||
+      wacz_replay::IsReplayTab(contents)) {
     return;
   }
   BrowserWindowInterface* window = tab->GetBrowserWindowInterface();
@@ -130,7 +194,14 @@ void ArchivePageHandler::StopArchiving() {
 }
 
 void ArchivePageHandler::ShowDirectory() {
-  if (WarcTabCapture* capture = CaptureOf(GetTabContents())) {
+  content::WebContents* contents = GetTabContents();
+  if (ReplayLog* log =
+          contents ? ReplayLog::FromWebContents(contents) : nullptr) {
+    platform_util::ShowItemInFolder(Profile::FromWebUI(&*web_ui_),
+                                    log->archive());
+    return;
+  }
+  if (WarcTabCapture* capture = CaptureOf(contents)) {
     RememberDirectory(capture);
   }
   if (last_directory_.empty()) {
@@ -144,11 +215,10 @@ void ArchivePageHandler::OnCaptureChanged(content::WebContents* web_contents) {
   if (web_contents != GetTabContents()) {
     return;
   }
-  WarcTabCapture* capture = CaptureOf(web_contents);
-  if (capture) {
+  if (WarcTabCapture* capture = CaptureOf(web_contents)) {
     RememberDirectory(capture);
   }
-  page_->OnCaptureChanged(StatusOf(capture));
+  page_->OnCaptureChanged(StatusOf(web_contents));
 }
 
 void ArchivePageHandler::OnExchangeRecorded(
@@ -160,6 +230,30 @@ void ArchivePageHandler::OnExchangeRecorded(
   // Reported once counted, so the count is this exchange's number.
   page_->OnExchangeRecorded(
       ToMojom(exchange, CaptureOf(web_contents)->exchange_count()));
+}
+
+void ArchivePageHandler::OnReplayStarted(content::WebContents* web_contents) {
+  if (web_contents != GetTabContents()) {
+    return;
+  }
+  page_->OnCaptureChanged(StatusOf(web_contents));
+}
+
+void ArchivePageHandler::OnReplayRequest(content::WebContents* web_contents,
+                                         const warc::ReplayOutcome& request) {
+  if (web_contents != GetTabContents()) {
+    return;
+  }
+  // Reported once counted, so the count is this request's number.
+  page_->OnExchangeRecorded(ToMojom(
+      request, ReplayLog::FromWebContents(web_contents)->request_count()));
+}
+
+CaptureStatusPtr ArchivePageHandler::StatusOf(content::WebContents* contents) {
+  if (contents && wacz_replay::IsReplayTab(contents)) {
+    return ReplayStatusOf(ReplayLog::FromWebContents(contents));
+  }
+  return CaptureStatusOf(CaptureOf(contents));
 }
 
 tabs::TabInterface* ArchivePageHandler::GetTab() {
@@ -177,11 +271,10 @@ void ArchivePageHandler::OnTabWillDiscardContents(
     content::WebContents* new_contents) {
   // The capture a tab starts belongs to the contents it is about to show, so
   // this is the first the page can hear of it.
-  WarcTabCapture* capture = CaptureOf(new_contents);
-  if (capture) {
+  if (WarcTabCapture* capture = CaptureOf(new_contents)) {
     RememberDirectory(capture);
   }
-  page_->OnCaptureChanged(StatusOf(capture));
+  page_->OnCaptureChanged(StatusOf(new_contents));
 }
 
 void ArchivePageHandler::RememberDirectory(WarcTabCapture* capture) {

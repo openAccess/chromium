@@ -47,6 +47,10 @@
   background: rgb(242, 153, 0);
 }
 
+:host([state_='replaying']) #dot {
+  background: rgb(26, 115, 232);
+}
+
 @keyframes pulse {
   50% { opacity: 0.35; }
 }
@@ -116,6 +120,12 @@
 }
 
 .method {
+  font-weight: 500;
+  margin-inline-end: 4px;
+}
+
+.closest {
+  color: rgb(242, 153, 0);
   font-weight: 500;
   margin-inline-end: 4px;
 }

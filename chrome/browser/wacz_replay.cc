@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/containers/flat_set.h"
 #include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
@@ -25,6 +26,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/wacz_replay/replay_log.h"
 #include "chrome/common/chrome_switches.h"
 #include "components/warc/cdxj.h"
 #include "components/warc/wacz_collection.h"
@@ -83,6 +85,41 @@ const content::StoragePartition* PartitionOf(content::RenderFrameHost* frame,
     return process->GetStoragePartition();
   }
   return nullptr;
+}
+
+// Adds what became of a request to the log of the tab that made it, if the tab
+// is still there.
+void ReportToTab(base::WeakPtr<content::WebContents> tab,
+                 const base::FilePath& archive,
+                 base::Time moment,
+                 const warc::ReplayOutcome& request) {
+  if (tab) {
+    ReplayLog::Record(tab.get(), archive, moment, request);
+  }
+}
+
+// As ReportToTab(), for a worker: it belongs to a process rather than a tab, so
+// what it asks for goes in the log of each tab with a frame in its process.
+// A process serves one partition, so they are all replaying what it is.
+void ReportToTabsInProcess(int render_process_id,
+                           const base::FilePath& archive,
+                           base::Time moment,
+                           const warc::ReplayOutcome& request) {
+  content::RenderProcessHost* process =
+      content::RenderProcessHost::FromID(render_process_id);
+  if (!process) {
+    return;
+  }
+  base::flat_set<content::WebContents*> tabs;
+  process->ForEachRenderFrameHost([&tabs](content::RenderFrameHost* frame) {
+    if (content::WebContents* tab =
+            content::WebContents::FromRenderFrameHost(frame)) {
+      tabs.insert(tab);
+    }
+  });
+  for (content::WebContents* tab : tabs) {
+    ReplayLog::Record(tab, archive, moment, request);
+  }
 }
 
 void OpenReplayTab(BrowserWindowInterface* browser,
@@ -258,9 +295,19 @@ void BindFactory(
   // one process cannot be served two different ones.
   const content::StoragePartition* partition =
       PartitionOf(frame, render_process_id);
+  const base::Time clock_start =
+      partition ? ReplayClockStart(partition->GetConfig()).value_or(base::Time())
+                : base::Time();
+  content::WebContents* tab =
+      frame ? content::WebContents::FromRenderFrameHost(frame) : nullptr;
+  warc::ReplayReporter reporter =
+      tab ? base::BindRepeating(&ReportToTab, tab->GetWeakPtr(), ArchivePath(),
+                                clock_start)
+          : base::BindRepeating(&ReportToTabsInProcess, render_process_id,
+                                ArchivePath(), clock_start);
   Archive()->BindFactory(
       partition ? ReplayMoment(partition->GetConfig()) : std::string(),
-      std::move(receiver), std::move(passthrough));
+      std::move(receiver), std::move(passthrough), std::move(reporter));
 }
 
 }  // namespace wacz_replay

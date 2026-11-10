@@ -19,6 +19,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
+#include "components/warc/cdxj.h"
 #include "components/warc/gzip_member_writer.h"
 #include "components/warc/request_key.h"
 #include "components/warc/surt.h"
@@ -96,7 +97,8 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
   // Serves what was added, at `timestamp`. The archive stays open in
   // `open_archive_`, so a test can make it a second factory.
   mojo::Remote<network::mojom::URLLoaderFactory> BuildFactory(
-      const std::string& timestamp = kTimestamp) {
+      const std::string& timestamp = kTimestamp,
+      ReplayReporter reporter = ReplayReporter()) {
     const base::FilePath content = temp_dir_.GetPath().AppendASCII("content");
     const base::FilePath archive_dir = content.AppendASCII("archive");
     const base::FilePath indexes = content.AppendASCII("indexes");
@@ -112,7 +114,16 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
 
     open_archive_ = WaczArchive::Open(path);
     return mojo::Remote<network::mojom::URLLoaderFactory>(
-        open_archive_->CreateFactory(timestamp));
+        open_archive_->CreateFactory(timestamp, std::move(reporter)));
+  }
+
+  // A reporter that keeps what it is told in `outcomes_`.
+  ReplayReporter KeepOutcomes() {
+    return base::BindRepeating(
+        [](std::vector<ReplayOutcome>* outcomes, const ReplayOutcome& outcome) {
+          outcomes->push_back(outcome);
+        },
+        base::Unretained(&outcomes_));
   }
 
   // Issues `url` through `factory`. The loader is kept alive for as long as
@@ -212,6 +223,7 @@ class WaczUrlLoaderFactoryTest : public testing::Test {
 
   mojo::PendingRemote<network::mojom::URLLoader> loader_;
   scoped_refptr<WaczArchive> open_archive_;
+  std::vector<ReplayOutcome> outcomes_;
 
   static constexpr char kTimestamp[] = "20260101120000";
 
@@ -741,6 +753,138 @@ TEST_F(WaczUrlLoaderFactoryTest, AnUnreadableArchiveServesNothing) {
   network::TestURLLoaderClient client;
   FetchExpectingFailure(factory, "https://example.org/p", &client);
   EXPECT_EQ(net::ERR_FILE_NOT_FOUND, client.completion_status().error_code);
+}
+
+// What each request was answered with is told as it is answered: the stored
+// status, type and size, and when the capture that answered was taken.
+TEST_F(WaczUrlLoaderFactoryTest, TellsWhatEachRequestWasAnsweredWith) {
+  AddResponse("https://example.org/",
+              "HTTP/1.1 200 OK\r\n"
+              "Content-Type: Text/HTML; charset=utf-8\r\n\r\n",
+              "<html>page</html>", "20260101115959");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory =
+      BuildFactory(kTimestamp, KeepOutcomes());
+
+  network::ResourceRequest request;
+  request.url = GURL("https://example.org/");
+  request.method = "GET";
+  request.destination = network::mojom::RequestDestination::kDocument;
+  network::TestURLLoaderClient client;
+  EXPECT_EQ("<html>page</html>", FetchBody(factory, request, &client));
+
+  ASSERT_EQ(1u, outcomes_.size());
+  const ReplayOutcome& outcome = outcomes_[0];
+  EXPECT_EQ(GURL("https://example.org/"), outcome.url);
+  EXPECT_EQ("GET", outcome.method);
+  EXPECT_EQ("document", outcome.destination);
+  EXPECT_FALSE(outcome.missing);
+  EXPECT_EQ(net::OK, outcome.net_error);
+  EXPECT_EQ(200, outcome.status_code);
+  EXPECT_EQ("text/html", outcome.mime_type);
+  EXPECT_EQ(17u, outcome.body_bytes);
+  EXPECT_EQ(ParseIndexTimestamp("20260101115959"), outcome.captured);
+  EXPECT_TRUE(outcome.captured_url.is_empty());
+  EXPECT_FALSE(outcome.time.is_null());
+}
+
+// A request the archive cannot answer is told as missing, whether the page is
+// shown a page saying so or the request simply fails.
+TEST_F(WaczUrlLoaderFactoryTest, TellsOfARequestTheArchiveCannotAnswer) {
+  AddResponse("https://example.org/", "HTTP/1.1 200 OK\r\n\r\n", "page");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory =
+      BuildFactory(kTimestamp, KeepOutcomes());
+
+  network::ResourceRequest request;
+  request.url = GURL("https://example.org/gone");
+  request.method = "GET";
+  request.destination = network::mojom::RequestDestination::kDocument;
+  {
+    network::TestURLLoaderClient client;
+    FetchBody(factory, request, &client);
+  }
+  request.url = GURL("https://example.org/gone.js");
+  request.destination = network::mojom::RequestDestination::kScript;
+  {
+    network::TestURLLoaderClient client;
+    Start(factory, request, &client);
+    client.RunUntilComplete();
+  }
+
+  ASSERT_EQ(2u, outcomes_.size());
+  EXPECT_EQ(GURL("https://example.org/gone"), outcomes_[0].url);
+  EXPECT_EQ("document", outcomes_[0].destination);
+  EXPECT_TRUE(outcomes_[0].missing);
+  EXPECT_EQ(0, outcomes_[0].status_code);
+  EXPECT_EQ(GURL("https://example.org/gone.js"), outcomes_[1].url);
+  EXPECT_EQ("script", outcomes_[1].destination);
+  EXPECT_TRUE(outcomes_[1].missing);
+}
+
+// Answered by a capture of other words, the request says which: the closest
+// capture of a subresource is not what was asked for, and may not be what the
+// page wanted.
+TEST_F(WaczUrlLoaderFactoryTest, TellsWhichCaptureAnsweredInOtherWords) {
+  AddResponse("https://example.org/data.json?cb=111&v=2",
+              "HTTP/1.1 200 OK\r\n\r\n", "data");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory =
+      BuildFactory(kTimestamp, KeepOutcomes());
+
+  network::TestURLLoaderClient client;
+  EXPECT_EQ(
+      "data",
+      FetchBody(factory, "https://example.org/data.json?cb=999&v=2", &client));
+
+  ASSERT_EQ(1u, outcomes_.size());
+  EXPECT_EQ(GURL("https://example.org/data.json?cb=999&v=2"), outcomes_[0].url);
+  EXPECT_EQ(GURL("https://example.org/data.json?cb=111&v=2"),
+            outcomes_[0].captured_url);
+  EXPECT_FALSE(outcomes_[0].missing);
+}
+
+// A redirect is an answer of its own, and the request it sends the page on to
+// is another, as each would be on the network.
+TEST_F(WaczUrlLoaderFactoryTest, TellsOfARedirectAndWhereItLed) {
+  AddResponse("https://example.org/old",
+              "HTTP/1.1 301 Moved Permanently\r\n"
+              "Location: /new\r\n\r\n",
+              "");
+  AddResponse("https://example.org/new", "HTTP/1.1 200 OK\r\n\r\n", "arrived");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory =
+      BuildFactory(kTimestamp, KeepOutcomes());
+
+  network::TestURLLoaderClient client;
+  Start(factory, "https://example.org/old", &client);
+  client.RunUntilRedirectReceived();
+  Follow(&client);
+  EXPECT_EQ("arrived", ReadBody(&client));
+
+  ASSERT_EQ(2u, outcomes_.size());
+  EXPECT_EQ(GURL("https://example.org/old"), outcomes_[0].url);
+  EXPECT_EQ(301, outcomes_[0].status_code);
+  EXPECT_EQ(GURL("https://example.org/new"), outcomes_[1].url);
+  EXPECT_EQ(200, outcomes_[1].status_code);
+}
+
+// A redirect loop the replay ends is told as the failure it is, after the
+// redirects that made it.
+TEST_F(WaczUrlLoaderFactoryTest, TellsOfARedirectLoopItEnded) {
+  AddResponse("https://example.org/loop",
+              "HTTP/1.1 302 Found\r\nLocation: /loop\r\n\r\n", "");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory =
+      BuildFactory(kTimestamp, KeepOutcomes());
+
+  network::TestURLLoaderClient client;
+  Start(factory, "https://example.org/loop", &client);
+  for (int i = 0; i < net::URLRequest::kMaxRedirects; ++i) {
+    client.RunUntilRedirectReceived();
+    Follow(&client);
+  }
+  client.RunUntilComplete();
+  ASSERT_EQ(net::ERR_TOO_MANY_REDIRECTS, client.completion_status().error_code);
+
+  ASSERT_FALSE(outcomes_.empty());
+  EXPECT_EQ(net::ERR_TOO_MANY_REDIRECTS, outcomes_.back().net_error);
+  EXPECT_EQ(302, outcomes_[outcomes_.size() - 2].status_code);
 }
 
 }  // namespace

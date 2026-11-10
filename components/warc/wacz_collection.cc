@@ -500,6 +500,7 @@ std::optional<ArchivedResponse> WaczCollection::Read(const CdxjEntry& entry) {
   std::optional<ArchivedResponse> response = ParseStoredResponse(record->block);
   if (response) {
     response->timestamp = entry.timestamp;
+    response->url = entry.url;
   }
   return response;
 }

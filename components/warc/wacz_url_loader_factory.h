@@ -8,16 +8,61 @@
 #include <string>
 
 #include "base/files/file_path.h"
+#include "base/functional/callback.h"
 #include "base/memory/ref_counted.h"
 #include "base/threading/sequence_bound.h"
+#include "base/time/time.h"
 #include "components/warc/wacz_collection.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/network/public/cpp/self_deleting_url_loader_factory.h"
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
+#include "url/gurl.h"
 
 namespace warc {
+
+// What became of one request a replay was asked to answer: what the archive
+// held for it, or that it held nothing. A redirect is one answer and the
+// request it sends the page on to is another, as on the network.
+struct ReplayOutcome {
+  ReplayOutcome();
+  ReplayOutcome(const ReplayOutcome&);
+  ReplayOutcome& operator=(const ReplayOutcome&);
+  ~ReplayOutcome();
+
+  GURL url;
+  std::string method;
+  // What the page wanted it for, as Fetch names it -- "document", "script",
+  // "image" -- or empty for a fetch() or an XMLHttpRequest.
+  std::string destination;
+
+  // The archive holds nothing that answers it. A page missing this way is
+  // shown a page saying so, and anything else fails as if the network had.
+  bool missing = false;
+  // Why it failed other than by missing -- a redirect the replay would not
+  // follow, say -- or net::OK.
+  int net_error = 0;
+
+  // What was served, when something was: the stored status, the declared MIME
+  // type lower-cased without parameters, and the body's size as sent.
+  int status_code = 0;
+  std::string mime_type;
+  uint64_t body_bytes = 0;
+
+  // The capture that answered: when it was taken, and the URL it was taken
+  // for where that is not `url` -- another URL filed under the same key, or
+  // the closest capture of a subresource asked for in other words.
+  base::Time captured;
+  GURL captured_url;
+
+  // When the answer was given.
+  base::Time time;
+};
+
+// Told of every request a factory answers or cannot, on the sequence the
+// factory serves on.
+using ReplayReporter = base::RepeatingCallback<void(const ReplayOutcome&)>;
 
 // Serves requests from a WACZ instead of from the network.
 //
@@ -79,8 +124,11 @@ class WaczArchive : public base::RefCountedThreadSafe<WaczArchive> {
   // written either way a WACZ writes one, or be empty for the earliest
   // capture of each URL. Hand one to a frame and everything that frame asks
   // for comes from here.
+  //
+  // `reporter`, if given, hears what became of each request.
   mojo::PendingRemote<network::mojom::URLLoaderFactory> CreateFactory(
-      const std::string& timestamp);
+      const std::string& timestamp,
+      ReplayReporter reporter = ReplayReporter());
 
   // As above, for a caller that already has a receiver to fill -- which is
   // what a request interception hook hands over.
@@ -95,7 +143,8 @@ class WaczArchive : public base::RefCountedThreadSafe<WaczArchive> {
   void BindFactory(
       const std::string& timestamp,
       mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
-      mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough);
+      mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough,
+      ReplayReporter reporter = ReplayReporter());
 
   base::SequenceBound<WaczArchiveSource>& source() { return source_; }
 
@@ -117,6 +166,7 @@ class WaczUrlLoaderFactory : public network::SelfDeletingURLLoaderFactory {
       scoped_refptr<WaczArchive> archive,
       const std::string& timestamp,
       mojo::PendingRemote<network::mojom::URLLoaderFactory> passthrough,
+      ReplayReporter reporter,
       mojo::PendingReceiver<network::mojom::URLLoaderFactory> receiver,
       base::SelfDeletingPassKey key);
 
@@ -146,6 +196,9 @@ class WaczUrlLoaderFactory : public network::SelfDeletingURLLoaderFactory {
 
   // Where a request the archive has no business answering goes instead.
   mojo::Remote<network::mojom::URLLoaderFactory> passthrough_;
+
+  // Told what became of each request answered here; may be null.
+  const ReplayReporter reporter_;
 };
 
 }  // namespace warc

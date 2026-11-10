@@ -411,6 +411,7 @@ if (!is_android) {
       "//chrome/browser/ui/browser_window",
       "//chrome/browser/ui/commerce",
       "//chrome/browser:warc_capture",
+      "//chrome/browser/wacz_replay:partition",
       "//chrome/browser/ui/send_tab_to_self",
       "//chrome/browser/ui/side_panel",
       "//chrome/browser/ui/tabs/alert:tab_alert",

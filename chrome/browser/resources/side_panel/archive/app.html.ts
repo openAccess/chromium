@@ -17,6 +17,11 @@ export function getHtml(this: ArchiveAppElement) {
     <div id="totals">${this.totalsText_()}</div>` : html`
     <div class="hint">$i18n{notArchivingHint}</div>`}
   <div id="buttons">
+    ${this.isReplaying_() ? html`
+      <cr-button ?disabled="${!this.directory_}"
+          @click="${this.onShowFolderClick_}">
+        $i18n{showArchive}
+      </cr-button>` : html`
     ${this.isCapturing_() ? html`
       <cr-button class="action-button" @click="${this.onStopClick_}">
         $i18n{stopArchiving}
@@ -27,9 +32,9 @@ export function getHtml(this: ArchiveAppElement) {
     <cr-button ?disabled="${!this.directory_}"
         @click="${this.onShowFolderClick_}">
       $i18n{showFolder}
-    </cr-button>
+    </cr-button>`}
   </div>
-  <input id="filter" type="search" placeholder="$i18n{filter}"
+  <input id="filter" type="search" placeholder="${this.filterPlaceholder_()}"
       .value="${this.filter_}" @input="${this.onFilterInput_}">
 </div>
 <div id="table">
@@ -52,7 +57,9 @@ export function getHtml(this: ArchiveAppElement) {
       <span class="size" title="${this.sizeTitle_(exchange)}">
         ${this.sizeText_(exchange)}
       </span>
-      <span>${exchange.method !== 'GET' ? html`
+      <span>${exchange.capturedUrl ? html`
+        <span class="closest" title="${this.answeredByTitle_(exchange)}">≈</span>`
+          : ''}${exchange.method !== 'GET' ? html`
         <span class="method">${exchange.method}</span>` : ''}${
           this.urlText_(exchange)}</span>
     </div>`)}

@@ -42,6 +42,11 @@ struct ArchivedResponse {
 
   // When this was captured, as the index records it.
   std::string timestamp;
+
+  // The URL it was captured for, as the index records it. Not always the one
+  // asked for: a capture of another URL filed under the same key, or the
+  // closest capture of a subresource, may answer instead.
+  std::string url;
 };
 
 // What a page asked for: as much of the request as decides which capture
