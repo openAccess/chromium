@@ -75,6 +75,10 @@ struct ReplayRequest {
   // as it loads is another matter. Asked for the moment it was captured, it
   // would have had the answer stored; it misses only because its request
   // carries something new each time.
+  //
+  // A page or a frame may carry something new too, and is answered by a
+  // capture differing from it only in that (see
+  // FindCaptureIgnoringVisitValues()) whether or not this is set.
   bool accept_closest = false;
 };
 
@@ -92,7 +96,8 @@ enum class MissReason {
   kPathNotCaptured,
   // The path was captured by the request's method, but with another query --
   // and the request is one that only a capture of its own URL answers, a page
-  // or a frame (see ReplayRequest::accept_closest).
+  // or a frame (see ReplayRequest::accept_closest), with a query differing in
+  // more than what a load makes for itself.
   kOtherQuery,
   // The path was captured, but only by other methods: a POST where the
   // capture holds GETs, say.

@@ -396,6 +396,38 @@ TEST_F(WaczUrlLoaderFactoryTest, APageIsNotAnsweredByAnother) {
   }
 }
 
+// A frame a page opens with an id it made for the visit -- where the capture
+// opened it before there was one -- is the frame the capture holds, and is
+// served from it. So is a page, and each says which capture answered.
+TEST_F(WaczUrlLoaderFactoryTest, AFrameWithAnIdMadeForTheVisitIsServed) {
+  AddResponse("https://example.org/consent?site=7&uuid=null",
+              "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n",
+              "<html>consent</html>");
+  mojo::Remote<network::mojom::URLLoaderFactory> factory =
+      BuildFactory(kTimestamp, KeepOutcomes());
+
+  network::ResourceRequest request;
+  request.url = GURL(
+      "https://example.org/consent?site=7&"
+      "uuid=50b0c9e2-bcca-4206-a3b7-068d73120f22");
+  request.method = "GET";
+  for (const auto destination : {network::mojom::RequestDestination::kIframe,
+                                 network::mojom::RequestDestination::kDocument}) {
+    request.destination = destination;
+    network::TestURLLoaderClient client;
+    EXPECT_EQ("<html>consent</html>", FetchBody(factory, request, &client));
+    EXPECT_EQ(net::OK, client.completion_status().error_code);
+  }
+
+  ASSERT_EQ(2u, outcomes_.size());
+  for (const ReplayOutcome& outcome : outcomes_) {
+    EXPECT_FALSE(outcome.missing);
+    EXPECT_EQ(request.url, outcome.url);
+    EXPECT_EQ(GURL("https://example.org/consent?site=7&uuid=null"),
+              outcome.captured_url);
+  }
+}
+
 // Handed over as the redirect it was, as the server handed it over, so that
 // the client can check it and follow it: where a frame or a script ends up is
 // its URL and its origin. Served as a response that merely said 301, it was
@@ -950,7 +982,8 @@ TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfAPathNeverCaptured) {
 
 // A page asked for with another query than it was captured with is not
 // answered with the capture -- and says which capture that was, since that is
-// the page the visitor probably meant.
+// the page the visitor probably meant. Another id is another query: it may
+// name another thing.
 TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfAPageCapturedWithAnotherQuery) {
   AddResponse(
       "https://example.org/frame?uuid=9f8e7d6c-5b4a-4321-8fed-cba987654321&"
@@ -968,6 +1001,23 @@ TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfAPageCapturedWithAnotherQuery) {
       miss.url);
   EXPECT_EQ("GET", miss.method);
   EXPECT_EQ("20260101115950", miss.timestamp);
+}
+
+// A frame that a capture differing only in its visit's id would answer,
+// were the capture readable, is missing for that and not for its query.
+TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfARemadeFrameThatCannotBeRead) {
+  AddResponse("https://example.org/", "HTTP/1.1 200 OK\r\n\r\n", "page");
+  index_ += base::StrCat(
+      {ToSurt(GURL("https://example.org/frame?uuid=null")), " ", kTimestamp,
+       " {\"url\": \"https://example.org/frame?uuid=null\", \"status\": "
+       "\"200\", \"length\": \"10\", \"offset\": \"0\", "
+       "\"filename\": \"elsewhere.warc.gz\"}\n"});
+
+  const MissExplanation miss = MissFor(
+      Get("https://example.org/frame?uuid=50b0c9e2-bcca-4206-a3b7-068d73120f22",
+          network::mojom::RequestDestination::kIframe));
+  EXPECT_EQ(MissReason::kUnreadable, miss.reason);
+  EXPECT_EQ("https://example.org/frame?uuid=null", miss.url);
 }
 
 TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfAPathCapturedByAnotherMethod) {

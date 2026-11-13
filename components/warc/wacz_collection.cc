@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <array>
+#include <initializer_list>
 #include <memory>
 #include <utility>
 
@@ -455,15 +456,20 @@ std::optional<ArchivedResponse> WaczCollection::Lookup(
       }
     }
   }
-  // Only once nothing was filed under the request's own words.
-  if (request.accept_closest) {
-    for (const std::string& key : keys) {
-      for (const CdxjEntry* entry :
-           {FindClosestCapture(index_, key, moment, whole),
-            FindClosestCapture(index_, key, moment, any)}) {
-        if (entry) {
-          return Read(*entry);
-        }
+  // Only once nothing was filed under the request's own words: what came
+  // nearest, for a request any such capture may answer, and for one that
+  // only its own may, a capture differing in what the load made for itself.
+  for (const std::string& key : keys) {
+    for (const CdxjEntry* entry :
+         request.accept_closest
+             ? std::initializer_list<const CdxjEntry*>{
+                   FindClosestCapture(index_, key, moment, whole),
+                   FindClosestCapture(index_, key, moment, any)}
+             : std::initializer_list<const CdxjEntry*>{
+                   FindCaptureIgnoringVisitValues(index_, key, moment, whole),
+                   FindCaptureIgnoringVisitValues(index_, key, moment, any)}) {
+      if (entry) {
+        return Read(*entry);
       }
     }
   }
@@ -502,8 +508,17 @@ MissExplanation WaczCollection::ExplainMiss(const ReplayRequest& request,
     }
   }
   // The same path by the same method: what Lookup() would have served had it
-  // been readable, for a request that takes the closest capture, and what it
-  // would not serve for one that does not.
+  // been readable, for a request that takes the closest capture or that one
+  // differing only in what the load made for itself answers; and what it
+  // would not serve, for one that takes neither.
+  if (!request.accept_closest) {
+    for (const std::string& key : keys) {
+      if (const CdxjEntry* entry =
+              FindCaptureIgnoringVisitValues(index_, key, moment, any)) {
+        return nearest(MissReason::kUnreadable, *entry);
+      }
+    }
+  }
   for (const std::string& key : keys) {
     if (const CdxjEntry* entry = FindClosestCapture(index_, key, moment, any)) {
       return nearest(request.accept_closest ? MissReason::kUnreadable

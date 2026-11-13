@@ -5,6 +5,9 @@
 #include "components/warc/cdxj.h"
 
 #include <algorithm>
+#include <functional>
+#include <iterator>
+#include <map>
 #include <set>
 #include <utility>
 #include <vector>
@@ -84,6 +87,168 @@ int Agreement(const KeyQuery& wanted, const KeyQuery& candidate) {
     }
   }
   return score;
+}
+
+// The query of a key as its parameters, each with the values it was given,
+// sorted. A name given alone has the empty value. The method is left out, as
+// in KeyQuery.
+using KeyParameters =
+    std::map<std::string_view, std::vector<std::string_view>, std::less<>>;
+
+KeyParameters ParseKeyParameters(std::string_view query) {
+  KeyParameters parameters;
+  for (std::string_view term : base::SplitStringPiece(
+           query, "&", base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY)) {
+    const size_t equals = term.find('=');
+    const std::string_view name = term.substr(0, equals);
+    if (name == kMethodName) {
+      continue;
+    }
+    parameters[name].push_back(equals == std::string_view::npos
+                                   ? std::string_view()
+                                   : term.substr(equals + 1));
+  }
+  for (auto& [name, values] : parameters) {
+    std::sort(values.begin(), values.end());
+  }
+  return parameters;
+}
+
+// What a value in a query is, as far as telling whether a load made it for
+// itself goes. See FindCaptureIgnoringVisitValues().
+enum class ValueKind {
+  // Chosen by whoever wrote the URL, as far as can be told.
+  kChosen,
+  // Nothing: no value yet.
+  kEmpty,
+  kClock,
+  kRandom,
+  kId,
+};
+
+// How a page writes a value it does not have yet. Keys are lower-cased.
+constexpr std::string_view kEmptyValues[] = {"",    "null", "undefined",
+                                             "nan", "false", "0"};
+
+// How far a reading of the clock may lie from the moment it was taken at.
+// Replay starts a page's clock at its capture and lets it run, so a visit's
+// readings drift from its moment as long as the visit lasts.
+constexpr base::TimeDelta kClockReach = base::Days(1);
+
+bool IsClockReading(std::string_view value, base::Time moment) {
+  if (moment.is_null() || (value.size() != 10 && value.size() != 13)) {
+    return false;
+  }
+  int64_t number = 0;
+  if (!base::StringToInt64(value, &number) || number < 0) {
+    return false;
+  }
+  const base::Time reading =
+      value.size() == 13 ? base::Time::FromMillisecondsSinceUnixEpoch(number)
+                         : base::Time::FromSecondsSinceUnixEpoch(number);
+  return (reading - moment).magnitude() <= kClockReach;
+}
+
+bool IsRandomFraction(std::string_view value) {
+  return value.size() >= 8 && value.starts_with("0.") &&
+         std::ranges::all_of(value.substr(2),
+                             [](char c) { return base::IsAsciiDigit(c); });
+}
+
+bool IsUuid(std::string_view text) {
+  if (text.size() != 36) {
+    return false;
+  }
+  for (size_t i = 0; i < text.size(); ++i) {
+    const bool dash = i == 8 || i == 13 || i == 18 || i == 23;
+    if (dash ? text[i] != '-' : !base::IsHexDigit(text[i])) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Letters and digits both: sixteen hex digits that are all digits are a
+// number -- an id a site counts out, chosen like any other -- and sixteen
+// that are all letters are a word.
+bool IsHexId(std::string_view text) {
+  return text.size() >= 16 &&
+         std::ranges::all_of(text, [](char c) { return base::IsHexDigit(c); }) &&
+         std::ranges::any_of(text, [](char c) { return base::IsAsciiDigit(c); }) &&
+         std::ranges::any_of(text, [](char c) { return base::IsAsciiAlpha(c); });
+}
+
+// An id alone, or ids among punctuation: "~<uuid>~~", as one consent library
+// joins the ids it holds into one parameter.
+bool IsMadeId(std::string_view value) {
+  const auto is_part = [](char c) {
+    return base::IsAsciiAlphaNumeric(c) || c == '-';
+  };
+  bool any = false;
+  size_t start = 0;
+  while (start < value.size()) {
+    if (!is_part(value[start])) {
+      ++start;
+      continue;
+    }
+    size_t end = start;
+    while (end < value.size() && is_part(value[end])) {
+      ++end;
+    }
+    const std::string_view piece = value.substr(start, end - start);
+    if (!IsUuid(piece) && !IsHexId(piece)) {
+      return false;
+    }
+    any = true;
+    start = end;
+  }
+  return any;
+}
+
+ValueKind KindOf(std::string_view value, base::Time moment) {
+  if (std::ranges::find(kEmptyValues, value) != std::end(kEmptyValues)) {
+    return ValueKind::kEmpty;
+  }
+  if (IsClockReading(value, moment)) {
+    return ValueKind::kClock;
+  }
+  if (IsRandomFraction(value)) {
+    return ValueKind::kRandom;
+  }
+  if (IsMadeId(value)) {
+    return ValueKind::kId;
+  }
+  return ValueKind::kChosen;
+}
+
+// Whether the values one parameter was given in two queries -- none, where
+// it was not given -- differ only as values a load makes for itself do, each
+// judged by the moment its query was made at.
+bool DifferOnlyAsVisitValues(base::span<const std::string_view> wanted,
+                             base::Time wanted_moment,
+                             base::span<const std::string_view> captured,
+                             base::Time captured_moment) {
+  if (std::ranges::equal(wanted, captured)) {
+    return true;
+  }
+  // A parameter given several times is a list, and a list is chosen.
+  if (wanted.size() > 1 || captured.size() > 1) {
+    return false;
+  }
+  const ValueKind a =
+      wanted.empty() ? ValueKind::kEmpty : KindOf(wanted[0], wanted_moment);
+  const ValueKind b = captured.empty() ? ValueKind::kEmpty
+                                       : KindOf(captured[0], captured_moment);
+  if (a == ValueKind::kChosen || b == ValueKind::kChosen) {
+    return false;
+  }
+  // Something made for the visit where the other had nothing yet.
+  if (a == ValueKind::kEmpty || b == ValueKind::kEmpty) {
+    return a != b;
+  }
+  // Another reading of the clock, another roll of the die -- but not another
+  // id, which may name another thing.
+  return a == b && a != ValueKind::kId;
 }
 
 }  // namespace
@@ -248,6 +413,58 @@ const CdxjEntry* FindClosestCapture(
                         : std::string_view());
   });
   return closest;
+}
+
+const CdxjEntry* FindCaptureIgnoringVisitValues(
+    base::span<const CdxjEntry> entries,
+    std::string_view key,
+    std::string_view timestamp,
+    base::FunctionRef<bool(const CdxjEntry&)> accept) {
+  const size_t query_start = key.find('?');
+  const std::string_view path = key.substr(0, query_start);
+  const std::string method = KeyMethod(key);
+  const KeyParameters wanted =
+      ParseKeyParameters(query_start == std::string_view::npos
+                             ? std::string_view()
+                             : key.substr(query_start + 1));
+  const base::Time target = ParseIndexTimestamp(timestamp);
+  const auto values_of = [](const KeyParameters& parameters,
+                            std::string_view name) {
+    const auto it = parameters.find(name);
+    return it == parameters.end() ? base::span<const std::string_view>()
+                                  : base::span(it->second);
+  };
+
+  const CdxjEntry* found = nullptr;
+  base::TimeDelta found_distance;
+  ForEachCaptureOfPath(entries, key, [&](const CdxjEntry& entry) {
+    if (!accept(entry) || KeyMethod(entry.key) != method) {
+      return;
+    }
+    const KeyParameters captured = ParseKeyParameters(
+        entry.key.size() > path.size()
+            ? std::string_view(entry.key).substr(path.size() + 1)
+            : std::string_view());
+    const base::Time captured_at = ParseIndexTimestamp(entry.timestamp);
+    for (const auto& [name, values] : wanted) {
+      if (!DifferOnlyAsVisitValues(values, target, values_of(captured, name),
+                                   captured_at)) {
+        return;
+      }
+    }
+    for (const auto& [name, values] : captured) {
+      if (!wanted.contains(name) &&
+          !DifferOnlyAsVisitValues({}, target, values, captured_at)) {
+        return;
+      }
+    }
+    const base::TimeDelta distance = (captured_at - target).magnitude();
+    if (!found || distance < found_distance) {
+      found = &entry;
+      found_distance = distance;
+    }
+  });
+  return found;
 }
 
 void ForEachCaptureOfPath(base::span<const CdxjEntry> entries,

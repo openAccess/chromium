@@ -121,6 +121,39 @@ const CdxjEntry* FindClosestCapture(
     std::string_view timestamp,
     base::FunctionRef<bool(const CdxjEntry&)> accept);
 
+// Returns the capture of `key`'s URL path, by the same method, whose query is
+// `key`'s own once the values each load makes anew are set aside -- the
+// nearest `timestamp` of those. Null if there is none.
+//
+// For a request only a capture of its own URL may answer, a page or a frame,
+// that a page still words anew each time: the consent frame a news site opens
+// with an id it made for the visit, where the capture opened it before there
+// was an id to give. FindClosestCapture() would answer that with whatever lay
+// nearest, which for a page risks landing on the wrong one. This answers only
+// with a capture that differs in values that cannot have chosen the page.
+//
+// A value counts as made for the visit when it is
+//
+//   - a reading of the clock: 10 or 13 digits, as seconds or milliseconds,
+//     within a day of the moment asked for -- or, for a capture's value, of
+//     when it was captured;
+//   - a random fraction: "0." and six digits or more; or
+//   - an id: a UUID, or 16 hex digits or more with both letters and digits,
+//     alone or among punctuation, as a page strings its ids together.
+//
+// One is set aside where the other query has nothing in its place -- no such
+// parameter, or "", "null", "undefined", "nan", "false" or "0" -- and a clock
+// or a random number also where the other has another of its kind.
+//
+// Two ids are never taken for each other. Unlike a clock or a die, an id may
+// be what chose the page: a site that fetches the parts of its pages by their
+// UUIDs is asking for another part when it asks with another one.
+const CdxjEntry* FindCaptureIgnoringVisitValues(
+    base::span<const CdxjEntry> entries,
+    std::string_view key,
+    std::string_view timestamp,
+    base::FunctionRef<bool(const CdxjEntry&)> accept);
+
 // Calls `visit` with each capture of `key`'s URL path -- the part of a key
 // before its query -- by any method and with any query or none, in index
 // order. `entries` must be sorted by key.
