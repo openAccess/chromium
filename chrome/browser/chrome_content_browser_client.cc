@@ -7307,6 +7307,16 @@ bool ChromeContentBrowserClient::ShouldDenyNetworkAccess(
   return wacz_replay::IsReplayPartition(config);
 }
 
+// A tab being archived is in a partition of its own, made for its capture, so
+// what is loaded there is the capture's whoever loads it. A worker or a service
+// worker has no tab to ask about, but it does have a partition.
+std::optional<base::UnguessableToken>
+ChromeContentBrowserClient::GetWarcCaptureIdForPartition(
+    content::BrowserContext* browser_context,
+    const content::StoragePartitionConfig& config) {
+  return WarcTabCapture::CaptureIdOfPartition(config);
+}
+
 std::vector<base::FilePath>
 ChromeContentBrowserClient::GetNetworkContextsParentDirectory() {
   CHECK(!network_contexts_parent_directory_.empty(), base::NotFatalUntil::M163);

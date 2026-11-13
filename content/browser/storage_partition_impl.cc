@@ -3560,6 +3560,9 @@ void StoragePartitionImpl::InitNetworkContext() {
                                                              config_)) {
     context_params->deny_network_access = true;
   }
+  context_params->warc_capture_id =
+      GetContentClient()->browser()->GetWarcCaptureIdForPartition(
+          browser_context_, config_);
   // Should be initialized with existing per-profile CORS access lists.
   DCHECK(context_params->cors_origin_access_list.empty())
       << "NetworkContextParams::cors_origin_access_list should be populated "

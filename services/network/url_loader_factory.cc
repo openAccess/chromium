@@ -385,12 +385,17 @@ void URLLoaderFactory::CreateLoaderAndStartWithSyncClient(
   // Which capture the request belongs to, if it is from a tab being archived
   // on its own. A navigation says so in its trusted params, which only a
   // trusted factory accepts; anything else inherits the factory's, which the
-  // browser set when it made the factory for the frame.
-  const std::optional<base::UnguessableToken> warc_capture_id =
-      resource_request.trusted_params &&
-              resource_request.trusted_params->warc_capture_id
-          ? resource_request.trusted_params->warc_capture_id
-          : params_->warc_capture_id;
+  // browser set when it made the factory for the frame. A request made by no
+  // frame -- a worker's, a service worker's -- inherits the context's, which
+  // the browser set for the whole of the tab's storage partition.
+  std::optional<base::UnguessableToken> warc_capture_id =
+      context_->warc_capture_id();
+  if (resource_request.trusted_params &&
+      resource_request.trusted_params->warc_capture_id) {
+    warc_capture_id = resource_request.trusted_params->warc_capture_id;
+  } else if (params_->warc_capture_id) {
+    warc_capture_id = params_->warc_capture_id;
+  }
 
   // When WARC recording is on, hand the loader a factory rather than a single
   // recorder: a redirect chain is archived as one record pair per hop, so the

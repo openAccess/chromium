@@ -1553,16 +1553,24 @@ class NetworkServiceTestWithService : public testing::Test {
     service_->Initialize(GetParams());
   }
 
-  void CreateNetworkContext() {
+  void CreateNetworkContext(
+      std::optional<base::UnguessableToken> warc_capture_id = std::nullopt) {
+    CreateNetworkContext(network_context_, warc_capture_id);
+  }
+
+  // As above, bound to `context` rather than to context().
+  void CreateNetworkContext(
+      mojo::Remote<mojom::NetworkContext>& context,
+      std::optional<base::UnguessableToken> warc_capture_id) {
     mojom::NetworkContextParamsPtr context_params =
         mojom::NetworkContextParams::New();
     // Use a dummy CertVerifier that always passes cert verification, since
     // these unittests don't need to test CertVerifier behavior.
     context_params->cert_verifier_params =
         FakeTestCertVerifierParamsFactory::GetCertVerifierParams();
-    network_service_->CreateNetworkContext(
-        network_context_.BindNewPipeAndPassReceiver(),
-        std::move(context_params));
+    context_params->warc_capture_id = warc_capture_id;
+    network_service_->CreateNetworkContext(context.BindNewPipeAndPassReceiver(),
+                                           std::move(context_params));
   }
 
   void LoadURL(const GURL& url, int options = mojom::kURLLoadOptionNone) {
@@ -1932,6 +1940,54 @@ TEST_F(NetworkServiceTestWithService, WarcCaptureTakesNavigationsByRequest) {
   const std::string archive = ReadArchive(tab_path);
   EXPECT_NE(archive.find("GET /echoquery?navigation "), std::string::npos);
   EXPECT_EQ(archive.find("unmarked"), std::string::npos);
+}
+
+// A context made for one capture records into it what is loaded through it
+// that names no capture -- a worker's request, say, which no frame's factory
+// marks. A factory or a navigation that does name one still decides, and a
+// context made for no capture records nothing into this one.
+TEST_F(NetworkServiceTestWithService, WarcCaptureTakesWhatItsContextLoads) {
+  base::ScopedTempDir temp_dir;
+  ASSERT_TRUE(temp_dir.CreateUniqueTempDir());
+  const base::FilePath tab_path = temp_dir.GetPath().AppendASCII("tab.warc");
+  const base::FilePath other_path =
+      temp_dir.GetPath().AppendASCII("other.warc");
+  const auto tab = base::UnguessableToken::Create();
+  const auto other = base::UnguessableToken::Create();
+
+  StartWarcCaptureAndWait(service(), tab, tab_path);
+  StartWarcCaptureAndWait(service(), other, other_path);
+  CreateNetworkContext(/*warc_capture_id=*/tab);
+  mojo::Remote<mojom::NetworkContext> elsewhere;
+  CreateNetworkContext(elsewhere, /*warc_capture_id=*/std::nullopt);
+
+  LoadForWarcCapture(context(), test_server()->GetURL("/echoquery?unmarked"),
+                     /*factory_capture_id=*/std::nullopt);
+  LoadForWarcCapture(context(), test_server()->GetURL("/echoquery?by-factory"),
+                     /*factory_capture_id=*/other);
+  LoadForWarcCapture(context(), test_server()->GetURL("/echoquery?by-request"),
+                     /*factory_capture_id=*/std::nullopt,
+                     /*request_capture_id=*/other);
+  LoadForWarcCapture(elsewhere.get(),
+                     test_server()->GetURL("/echoquery?elsewhere"),
+                     /*factory_capture_id=*/std::nullopt);
+
+  StopWarcCaptureAndWait(service(), tab);
+  StopWarcCaptureAndWait(service(), other);
+  const std::string tab_archive = ReadArchive(tab_path);
+  const std::string other_archive = ReadArchive(other_path);
+
+  EXPECT_NE(tab_archive.find("GET /echoquery?unmarked "), std::string::npos);
+  EXPECT_EQ(tab_archive.find("by-factory"), std::string::npos);
+  EXPECT_EQ(tab_archive.find("by-request"), std::string::npos);
+  EXPECT_EQ(tab_archive.find("elsewhere"), std::string::npos);
+
+  EXPECT_NE(other_archive.find("GET /echoquery?by-factory "),
+            std::string::npos);
+  EXPECT_NE(other_archive.find("GET /echoquery?by-request "),
+            std::string::npos);
+  EXPECT_EQ(other_archive.find("unmarked"), std::string::npos);
+  EXPECT_EQ(other_archive.find("elsewhere"), std::string::npos);
 }
 
 // The id a renderer's factory carries outlives the capture it named. Once that

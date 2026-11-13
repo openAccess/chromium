@@ -1172,6 +1172,10 @@ bool NetworkContext::IsNetworkAccessDenied() const {
   return params_ && params_->deny_network_access;
 }
 
+std::optional<base::UnguessableToken> NetworkContext::warc_capture_id() const {
+  return params_ ? params_->warc_capture_id : std::nullopt;
+}
+
 void NetworkContext::CreateSocketFactory(
     mojo::PendingReceiver<mojom::SocketFactory> receiver) {
   // Its sockets take addresses rather than names, so the resolver that keeps

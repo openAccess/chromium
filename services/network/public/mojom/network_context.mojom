@@ -677,6 +677,17 @@ struct NetworkContextParams {
   // entirely, such as an archive being replayed, where a request that reaches
   // the live network is a leak rather than a fallback.
   bool deny_network_access = false;
+
+  // The WARC capture that everything loaded through this context records
+  // into (see NetworkService.StartWarcCapture), unless the request or its
+  // factory names one of its own. For a context that belongs to one capture
+  // as a whole, as the storage partition of a tab being archived does: much
+  // of what such a tab loads is loaded by no frame -- a worker's script and
+  // whatever the worker fetches, a service worker and everything a page it
+  // controls asks for through it -- and only the context they share knows
+  // which capture they are part of. Absent, or naming a capture that has
+  // stopped, requests go to the session-wide recording if there is one.
+  mojo_base.mojom.UnguessableToken? warc_capture_id;
 };
 
 struct NetworkConditions {
@@ -1033,8 +1044,10 @@ struct URLLoaderFactoryParams {
   // started with NetworkService.StartWarcCapture. Set by the browser on the
   // factories of a frame in a tab that is being archived on its own; the
   // navigation that committed the frame carries the same id in its
-  // TrustedUrlRequestParams. Absent, or naming a capture that has stopped,
-  // requests go to the session-wide recording if there is one.
+  // TrustedUrlRequestParams. Absent, requests take the context's
+  // (NetworkContextParams.warc_capture_id); absent there too, or naming a
+  // capture that has stopped, they go to the session-wide recording if there
+  // is one.
   mojo_base.mojom.UnguessableToken? warc_capture_id;
 };
 

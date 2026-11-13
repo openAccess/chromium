@@ -794,6 +794,9 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
   bool ShouldDenyNetworkAccess(
       content::BrowserContext* browser_context,
       const content::StoragePartitionConfig& config) override;
+  std::optional<base::UnguessableToken> GetWarcCaptureIdForPartition(
+      content::BrowserContext* browser_context,
+      const content::StoragePartitionConfig& config) override;
   std::vector<base::FilePath> GetNetworkContextsParentDirectory() override;
   std::optional<base::FilePath> GetNetworkContextsDataDirectory() override;
   std::optional<base::FilePath> GetNetworkContextsCacheDirectory() override;

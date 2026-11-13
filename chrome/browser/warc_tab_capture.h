@@ -18,6 +18,7 @@
 #include "base/observer_list_types.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
+#include "content/public/browser/storage_partition_config.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/web_contents_user_data.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -31,7 +32,12 @@
 // marked with that capture's id. The browser marks a tab's navigations and the
 // factories its frames load through (ChromeContentBrowserClient::
 // GetWarcCaptureId asks this class), so the archive holds what the tab loaded
-// and nothing from the tabs beside it.
+// and nothing from the tabs beside it. Much of what a tab loads is loaded by
+// no frame, though: a worker's script and what the worker fetches, a service
+// worker and everything a page it controls asks for through it. For those the
+// tab's storage partition is marked (see below), which is named for the
+// capture, so that its network context records into the capture whatever is
+// loaded in it.
 //
 // Each capture gets a directory of its own, named as a --warc-output capture
 // is, holding its archive and the pages.jsonl that turns it into a WACZ. It
@@ -115,6 +121,19 @@ class WarcTabCapture : public content::WebContentsObserver,
   static std::optional<base::UnguessableToken> GetCaptureId(
       content::WebContents* web_contents);
 
+  // The storage partition a tab archived into `capture_id` is made in: in
+  // memory, its own, and named for the capture, so that what is loaded there
+  // can be told apart by partition alone.
+  static content::StoragePartitionConfig CapturePartition(
+      content::BrowserContext* browser_context,
+      const base::UnguessableToken& capture_id);
+
+  // The capture that `config` was made for by CapturePartition(), if it was.
+  // Says nothing of whether that capture is still running: once it stops, the
+  // network service records its id's requests as unmarked.
+  static std::optional<base::UnguessableToken> CaptureIdOfPartition(
+      const content::StoragePartitionConfig& config);
+
   static void AddObserver(Observer* observer);
   static void RemoveObserver(Observer* observer);
 
@@ -142,10 +161,13 @@ class WarcTabCapture : public content::WebContentsObserver,
  private:
   friend class content::WebContentsUserData<WarcTabCapture>;
 
-  explicit WarcTabCapture(content::WebContents* web_contents);
+  WarcTabCapture(content::WebContents* web_contents,
+                 const base::UnguessableToken& capture_id);
 
-  // Starts archiving `web_contents`, a tab made by StartInEmptyState().
-  static void Start(content::WebContents* web_contents);
+  // Starts archiving `web_contents` into `capture_id`, a tab made by
+  // StartInEmptyState() in that capture's partition.
+  static void Start(content::WebContents* web_contents,
+                    const base::UnguessableToken& capture_id);
 
   // Hands the opened files to the network service. Static so that a tab that
   // stopped archiving, or closed, while they were opening still gets them
@@ -171,7 +193,7 @@ class WarcTabCapture : public content::WebContentsObserver,
 
   static void NotifyCaptureChanged(content::WebContents* web_contents);
 
-  const base::UnguessableToken capture_id_ = base::UnguessableToken::Create();
+  const base::UnguessableToken capture_id_;
   const int serial_;
 
   // Empty until the capture's files are open.

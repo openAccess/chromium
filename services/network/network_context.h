@@ -234,6 +234,10 @@ class COMPONENT_EXPORT(NETWORK_SERVICE) NetworkContext
 
   NetworkService* network_service() const { return network_service_; }
 
+  // The WARC capture this context's loads record into when neither the
+  // request nor its factory names one (NetworkContextParams::warc_capture_id).
+  std::optional<base::UnguessableToken> warc_capture_id() const;
+
   mojom::NetworkContextClient* client() {
     return client_.is_bound() ? client_.get() : nullptr;
   }

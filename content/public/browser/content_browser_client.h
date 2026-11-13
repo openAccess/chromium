@@ -626,7 +626,8 @@ class CONTENT_EXPORT ContentBrowserClient {
   // through are marked with it, so the network service records what the tab
   // loads into that capture and nothing else. Asked when a navigation starts
   // and when a frame's factories are made, so a change applies from the next
-  // navigation on.
+  // navigation on. What no frame loads is marked by
+  // GetWarcCaptureIdForPartition().
   virtual std::optional<base::UnguessableToken> GetWarcCaptureId(
       WebContents* web_contents);
 
@@ -2255,6 +2256,17 @@ class CONTENT_EXPORT ContentBrowserClient {
   // can undo it.
   virtual bool ShouldDenyNetworkAccess(BrowserContext* browser_context,
                                        const StoragePartitionConfig& config);
+
+  // The WARC capture that everything loaded in the storage partition `config`
+  // records into, if the partition belongs to one as a whole
+  // (NetworkContextParams::warc_capture_id) -- as the partition a tab is
+  // archived in does. GetWarcCaptureId() marks what the tab's frames load;
+  // this is what marks the rest, which no frame loads: workers, service
+  // workers, and the pages a service worker answers for. Applied after
+  // ConfigureNetworkContextParams(), as ShouldDenyNetworkAccess() is.
+  virtual std::optional<base::UnguessableToken> GetWarcCaptureIdForPartition(
+      BrowserContext* browser_context,
+      const StoragePartitionConfig& config);
 
   // Returns the parent paths that contain all the network service's
   // BrowserContexts' storage. Multiple paths can be returned, e.g. in case the

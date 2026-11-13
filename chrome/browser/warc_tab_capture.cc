@@ -41,7 +41,7 @@ namespace {
 constexpr char kWarcCapturePrefix[] = "chrdl";
 
 // The storage partitions archived tabs start empty in. Each tab gets one of its
-// own, so two captures share no state either.
+// own, named by its capture's id, so two captures share no state either.
 constexpr char kCapturePartitionDomain[] = "warc-capture";
 
 // Where captures go when --warc-output did not say: beside the user's
@@ -130,9 +130,11 @@ WarcTabCapture::Exchange& WarcTabCapture::Exchange::operator=(
     const Exchange&) = default;
 WarcTabCapture::Exchange::~Exchange() = default;
 
-WarcTabCapture::WarcTabCapture(content::WebContents* web_contents)
+WarcTabCapture::WarcTabCapture(content::WebContents* web_contents,
+                               const base::UnguessableToken& capture_id)
     : content::WebContentsObserver(web_contents),
       content::WebContentsUserData<WarcTabCapture>(*web_contents),
+      capture_id_(capture_id),
       serial_([] {
         static int next_serial = 0;
         return ++next_serial;
@@ -163,11 +165,12 @@ bool WarcTabCapture::IsCapturing(content::WebContents* web_contents) {
 }
 
 // static
-void WarcTabCapture::Start(content::WebContents* web_contents) {
+void WarcTabCapture::Start(content::WebContents* web_contents,
+                           const base::UnguessableToken& capture_id) {
   if (IsCapturing(web_contents)) {
     return;
   }
-  CreateForWebContents(web_contents);
+  CreateForWebContents(web_contents, capture_id);
   WarcTabCapture* capture = FromWebContents(web_contents);
   NotifyCaptureChanged(web_contents);
 
@@ -186,6 +189,7 @@ std::unique_ptr<content::WebContents> WarcTabCapture::StartInEmptyState(
   const GURL url = web_contents->GetLastCommittedURL();
   Profile* profile =
       Profile::FromBrowserContext(web_contents->GetBrowserContext());
+  const base::UnguessableToken capture_id = base::UnguessableToken::Create();
 
   // Fixed, as a replay tab's is, so the tab keeps its partition wherever it
   // goes; and fixed from its first frame, so nothing it loads is ever loaded
@@ -200,16 +204,13 @@ std::unique_ptr<content::WebContents> WarcTabCapture::StartInEmptyState(
                    profile,
                    content::SiteInstance::ShouldAssignSiteForURL(url) ? url
                                                                       : GURL(),
-                   content::StoragePartitionConfig::Create(
-                       profile, kCapturePartitionDomain,
-                       base::UnguessableToken::Create().ToString(),
-                       /*in_memory=*/true)));
+                   CapturePartition(profile, capture_id)));
   params.initially_hidden =
       web_contents->GetVisibility() == content::Visibility::HIDDEN;
   std::unique_ptr<content::WebContents> fresh =
       content::WebContents::Create(params);
 
-  Start(fresh.get());
+  Start(fresh.get(), capture_id);
   if (!url.is_empty() && !url.IsAboutBlank()) {
     FromWebContents(fresh.get())->initial_url_ = url;
   }
@@ -239,6 +240,25 @@ std::optional<base::UnguessableToken> WarcTabCapture::GetCaptureId(
     return std::nullopt;
   }
   return capture->capture_id_;
+}
+
+// static
+content::StoragePartitionConfig WarcTabCapture::CapturePartition(
+    content::BrowserContext* browser_context,
+    const base::UnguessableToken& capture_id) {
+  return content::StoragePartitionConfig::Create(
+      browser_context, kCapturePartitionDomain, capture_id.ToString(),
+      /*in_memory=*/true);
+}
+
+// static
+std::optional<base::UnguessableToken> WarcTabCapture::CaptureIdOfPartition(
+    const content::StoragePartitionConfig& config) {
+  if (config.partition_domain() != kCapturePartitionDomain) {
+    return std::nullopt;
+  }
+  return base::UnguessableToken::DeserializeFromString(
+      config.partition_name());
 }
 
 // static

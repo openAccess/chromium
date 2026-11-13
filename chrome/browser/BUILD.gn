@@ -5015,9 +5015,11 @@ source_set("warc_unit_tests") {
   sources = [
     "wacz_replay_unittest.cc",
     "warc_page_recorder_unittest.cc",
+    "warc_tab_capture_unittest.cc",
   ]
   deps = [
     ":browser",
+    ":chrome_content_browser_client",
     ":warc_capture",
     "//base",
     "//base/test:test_support",

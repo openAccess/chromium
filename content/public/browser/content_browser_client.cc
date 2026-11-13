@@ -1244,6 +1244,13 @@ bool ContentBrowserClient::ShouldDenyNetworkAccess(
   return false;
 }
 
+std::optional<base::UnguessableToken>
+ContentBrowserClient::GetWarcCaptureIdForPartition(
+    BrowserContext* browser_context,
+    const StoragePartitionConfig& config) {
+  return std::nullopt;
+}
+
 std::vector<base::FilePath>
 ContentBrowserClient::GetNetworkContextsParentDirectory() {
   return {};
