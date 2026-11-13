@@ -10,6 +10,7 @@
 
 #include "base/containers/circular_deque.h"
 #include "base/files/file_path.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/observer_list_types.h"
 #include "base/time/time.h"
 #include "components/warc/wacz_url_loader_factory.h"
@@ -44,7 +45,7 @@ class ReplayLog : public content::WebContentsUserData<ReplayLog> {
   // `archive` at `moment` (null when it serves the earliest capture of each
   // URL), starting the log if this is the tab's first request.
   static void Record(content::WebContents* web_contents,
-                     const base::FilePath& archive,
+                     scoped_refptr<warc::WaczArchive> archive,
                      base::Time moment,
                      const warc::ReplayOutcome& request);
 
@@ -56,7 +57,12 @@ class ReplayLog : public content::WebContentsUserData<ReplayLog> {
   // from the next.
   int serial() const { return serial_; }
 
-  const base::FilePath& archive() const { return archive_; }
+  // The archive replayed: where it is, and the archive itself, for asking
+  // what it holds beyond what the tab asked it for.
+  const base::FilePath& archive() const { return archive_->path(); }
+  const scoped_refptr<warc::WaczArchive>& opened_archive() const {
+    return archive_;
+  }
   base::Time moment() const { return moment_; }
 
   // The latest requests, oldest first.
@@ -75,13 +81,13 @@ class ReplayLog : public content::WebContentsUserData<ReplayLog> {
   friend class content::WebContentsUserData<ReplayLog>;
 
   ReplayLog(content::WebContents* web_contents,
-            base::FilePath archive,
+            scoped_refptr<warc::WaczArchive> archive,
             base::Time moment);
 
   void Add(const warc::ReplayOutcome& request);
 
   const int serial_;
-  const base::FilePath archive_;
+  const scoped_refptr<warc::WaczArchive> archive_;
   const base::Time moment_;
 
   base::circular_deque<warc::ReplayOutcome> requests_;

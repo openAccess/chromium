@@ -9,6 +9,7 @@
 
 #include "base/files/file_path.h"
 #include "base/functional/callback.h"
+#include "base/types/expected.h"
 #include "base/memory/ref_counted.h"
 #include "base/threading/sequence_bound.h"
 #include "base/time/time.h"
@@ -40,6 +41,8 @@ struct ReplayOutcome {
   // The archive holds nothing that answers it. A page missing this way is
   // shown a page saying so, and anything else fails as if the network had.
   bool missing = false;
+  // Why the archive held nothing, when it did not, and what came nearest.
+  MissExplanation miss;
   // Why it failed other than by missing -- a redirect the replay would not
   // follow, say -- or net::OK.
   int net_error = 0;
@@ -95,11 +98,17 @@ class WaczArchiveSource {
 
   ~WaczArchiveSource();
 
-  // The response stored for `request` at `timestamp`, or nullopt -- which is
-  // also the answer when the container could not be read at all, since there
-  // is nothing a caller could do differently about the two.
-  std::optional<ArchivedResponse> Lookup(ReplayRequest request,
-                                         std::string timestamp);
+  // The response stored for `request` at `timestamp`, or why there is none
+  // -- which is kUnreadable when the container could not be read at all.
+  base::expected<ArchivedResponse, MissExplanation> Lookup(
+      ReplayRequest request,
+      std::string timestamp);
+
+  // The archive, or null if it could not be read. For asking what it holds
+  // beyond what a page asks for; only on this sequence.
+  const WaczCollection* collection() const {
+    return collection_ ? &*collection_ : nullptr;
+  }
 
  private:
   std::optional<WaczCollection> collection_;
@@ -148,12 +157,16 @@ class WaczArchive : public base::RefCountedThreadSafe<WaczArchive> {
 
   base::SequenceBound<WaczArchiveSource>& source() { return source_; }
 
+  // The container this reads.
+  const base::FilePath& path() const { return path_; }
+
  private:
   friend class base::RefCountedThreadSafe<WaczArchive>;
 
   explicit WaczArchive(base::FilePath path);
   ~WaczArchive();
 
+  const base::FilePath path_;
   base::SequenceBound<WaczArchiveSource> source_;
 };
 

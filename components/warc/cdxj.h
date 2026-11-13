@@ -121,6 +121,26 @@ const CdxjEntry* FindClosestCapture(
     std::string_view timestamp,
     base::FunctionRef<bool(const CdxjEntry&)> accept);
 
+// Calls `visit` with each capture of `key`'s URL path -- the part of a key
+// before its query -- by any method and with any query or none, in index
+// order. `entries` must be sorted by key.
+//
+// What an archive holds of a URL when it does not hold the URL itself: the
+// same resource asked for in other words, or by another method.
+void ForEachCaptureOfPath(base::span<const CdxjEntry> entries,
+                          std::string_view key,
+                          base::FunctionRef<void(const CdxjEntry&)> visit);
+
+// The captures from `key`'s host -- the part of a SURT key up to its ")",
+// which is the host and port -- or none if the key names no host. `entries`
+// must be sorted by key, which puts a host's captures together.
+base::span<const CdxjEntry> CapturesOfHost(base::span<const CdxjEntry> entries,
+                                           std::string_view key);
+
+// The method a key files its capture under, upper-cased: the one it names in
+// its query, or "GET" for a key that names none, as a GET's never does.
+std::string KeyMethod(std::string_view key);
+
 }  // namespace warc
 
 #endif  // COMPONENTS_WARC_CDXJ_H_

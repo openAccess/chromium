@@ -269,14 +269,24 @@ class WaczUrlLoader : public network::mojom::URLLoader {
 
  private:
   // What the archive had to say.
-  void Serve(std::optional<ArchivedResponse> response) {
-    if (response) {
+  void Serve(base::expected<ArchivedResponse, MissExplanation> answer) {
+    std::optional<ArchivedResponse> response;
+    MissExplanation miss;
+    if (answer.has_value()) {
+      response = std::move(answer.value());
       if (std::optional<net::HttpByteRange> range = RequestedRange(request_)) {
+        // Which capture it was, in case it does not hold the range.
+        miss.reason = MissReason::kRangeNotHeld;
+        miss.url = response->url;
+        miss.method = request_.method;
+        miss.timestamp = response->timestamp;
         response = AnswerRange(std::move(*response), *range);
       }
+    } else {
+      miss = std::move(answer.error());
     }
     if (!response) {
-      ReportMissing();
+      ReportMissing(miss);
       // Nothing else to offer, and nowhere else to look. Saying so is the
       // point: a resource the archive lacks must be seen to be missing. A
       // document that is missing needs somewhere to say so; a subresource does
@@ -333,12 +343,13 @@ class WaczUrlLoader : public network::mojom::URLLoader {
     reporter_.Run(outcome);
   }
 
-  void ReportMissing() {
+  void ReportMissing(const MissExplanation& miss) {
     if (!reporter_) {
       return;
     }
     ReplayOutcome outcome = Outcome();
     outcome.missing = true;
+    outcome.miss = miss;
     reporter_.Run(outcome);
   }
 
@@ -494,13 +505,22 @@ WaczArchiveSource::WaczArchiveSource(base::FilePath path)
 
 WaczArchiveSource::~WaczArchiveSource() = default;
 
-std::optional<ArchivedResponse> WaczArchiveSource::Lookup(
+base::expected<ArchivedResponse, MissExplanation> WaczArchiveSource::Lookup(
     ReplayRequest request,
     std::string timestamp) {
   if (!collection_) {
-    return std::nullopt;
+    MissExplanation miss;
+    miss.reason = MissReason::kUnreadable;
+    return base::unexpected(std::move(miss));
   }
-  return collection_->Lookup(request, timestamp);
+  if (std::optional<ArchivedResponse> response =
+          collection_->Lookup(request, timestamp)) {
+    return std::move(*response);
+  }
+  // Only on a miss, and from the index alone: a page that misses at all
+  // misses a few dozen times, and each is a search or two of what is already
+  // in memory.
+  return base::unexpected(collection_->ExplainMiss(request, timestamp));
 }
 
 // static
@@ -509,7 +529,8 @@ scoped_refptr<WaczArchive> WaczArchive::Open(base::FilePath path) {
 }
 
 WaczArchive::WaczArchive(base::FilePath path)
-    : source_(base::ThreadPool::CreateSequencedTaskRunner(
+    : path_(path),
+      source_(base::ThreadPool::CreateSequencedTaskRunner(
                   {base::MayBlock(), base::TaskPriority::USER_BLOCKING,
                    base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN}),
               std::move(path)) {}

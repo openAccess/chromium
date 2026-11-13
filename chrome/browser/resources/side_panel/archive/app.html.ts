@@ -67,7 +67,8 @@ ${this.view_ === 'requests' ? html`
         ${this.statusText_(exchange)}
       </span>
       <span>${this.typeText_(exchange)}</span>
-      <span class="size" title="${this.sizeTitle_(exchange)}">
+      <span class="size ${exchange.missing ? 'reason' : ''}"
+          title="${this.sizeTitle_(exchange)}">
         ${this.sizeText_(exchange)}
       </span>
       <span>${exchange.capturedUrl ? html`

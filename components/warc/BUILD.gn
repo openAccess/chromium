@@ -46,8 +46,10 @@ static_library("replay") {
     "wacz_url_loader_factory.h",
   ]
 
+  # The collection's index is made of the format library's entries.
+  public_deps = [ ":warc" ]
+
   deps = [
-    ":warc",
     "//base",
     "//mojo/public/cpp/bindings",
     "//mojo/public/cpp/system",

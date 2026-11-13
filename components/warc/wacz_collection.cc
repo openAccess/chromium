@@ -307,6 +307,13 @@ ArchivedResponse::ArchivedResponse(ArchivedResponse&&) = default;
 ArchivedResponse& ArchivedResponse::operator=(ArchivedResponse&&) = default;
 ArchivedResponse::~ArchivedResponse() = default;
 
+MissExplanation::MissExplanation() = default;
+MissExplanation::MissExplanation(const MissExplanation&) = default;
+MissExplanation& MissExplanation::operator=(const MissExplanation&) = default;
+MissExplanation::MissExplanation(MissExplanation&&) = default;
+MissExplanation& MissExplanation::operator=(MissExplanation&&) = default;
+MissExplanation::~MissExplanation() = default;
+
 ReplayRequest::ReplayRequest() = default;
 ReplayRequest::ReplayRequest(const ReplayRequest&) = default;
 ReplayRequest& ReplayRequest::operator=(const ReplayRequest&) = default;
@@ -461,6 +468,69 @@ std::optional<ArchivedResponse> WaczCollection::Lookup(
     }
   }
   return std::nullopt;
+}
+
+MissExplanation WaczCollection::ExplainMiss(const ReplayRequest& request,
+                                            std::string_view timestamp) const {
+  MissExplanation miss;
+  // The keys Lookup() tried, as it made them.
+  std::vector<std::string> keys;
+  keys.push_back(RequestKey(request.url, request.method, request.content_type,
+                            request.body));
+  if (request.method == "HEAD") {
+    keys.push_back(ToSurt(request.url));
+  }
+  std::erase(keys, std::string());
+  if (keys.empty()) {
+    return miss;
+  }
+
+  const std::string moment = ToIndexTimestamp(timestamp);
+  const auto any = [](const CdxjEntry&) { return true; };
+  const auto nearest = [&](MissReason reason, const CdxjEntry& entry) {
+    miss.reason = reason;
+    miss.url = entry.url;
+    miss.method = KeyMethod(entry.key);
+    miss.timestamp = entry.timestamp;
+    return miss;
+  };
+
+  // What Lookup() would have served, had it been readable.
+  for (const std::string& key : keys) {
+    if (const CdxjEntry* entry = FindNearestCapture(index_, key, moment, any)) {
+      return nearest(MissReason::kUnreadable, *entry);
+    }
+  }
+  // The same path by the same method: what Lookup() would have served had it
+  // been readable, for a request that takes the closest capture, and what it
+  // would not serve for one that does not.
+  for (const std::string& key : keys) {
+    if (const CdxjEntry* entry = FindClosestCapture(index_, key, moment, any)) {
+      return nearest(request.accept_closest ? MissReason::kUnreadable
+                                            : MissReason::kOtherQuery,
+                     *entry);
+    }
+  }
+  // The same path by any method -- which is now another method -- nearest in
+  // time.
+  const base::Time target = ParseIndexTimestamp(moment);
+  const CdxjEntry* other_method = nullptr;
+  base::TimeDelta other_distance;
+  ForEachCaptureOfPath(index_, keys.front(), [&](const CdxjEntry& entry) {
+    const base::TimeDelta distance =
+        (ParseIndexTimestamp(entry.timestamp) - target).magnitude();
+    if (!other_method || distance < other_distance) {
+      other_method = &entry;
+      other_distance = distance;
+    }
+  });
+  if (other_method) {
+    return nearest(MissReason::kOtherMethod, *other_method);
+  }
+  miss.reason = CapturesOfHost(index_, keys.front()).empty()
+                    ? MissReason::kHostNotCaptured
+                    : MissReason::kPathNotCaptured;
+  return miss;
 }
 
 std::optional<ArchivedResponse> WaczCollection::Read(const CdxjEntry& entry) {

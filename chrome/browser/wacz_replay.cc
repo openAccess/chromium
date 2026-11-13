@@ -90,7 +90,7 @@ const content::StoragePartition* PartitionOf(content::RenderFrameHost* frame,
 // Adds what became of a request to the log of the tab that made it, if the tab
 // is still there.
 void ReportToTab(base::WeakPtr<content::WebContents> tab,
-                 const base::FilePath& archive,
+                 const scoped_refptr<warc::WaczArchive>& archive,
                  base::Time moment,
                  const warc::ReplayOutcome& request) {
   if (tab) {
@@ -102,7 +102,7 @@ void ReportToTab(base::WeakPtr<content::WebContents> tab,
 // what it asks for goes in the log of each tab with a frame in its process.
 // A process serves one partition, so they are all replaying what it is.
 void ReportToTabsInProcess(int render_process_id,
-                           const base::FilePath& archive,
+                           const scoped_refptr<warc::WaczArchive>& archive,
                            base::Time moment,
                            const warc::ReplayOutcome& request) {
   content::RenderProcessHost* process =
@@ -301,10 +301,10 @@ void BindFactory(
   content::WebContents* tab =
       frame ? content::WebContents::FromRenderFrameHost(frame) : nullptr;
   warc::ReplayReporter reporter =
-      tab ? base::BindRepeating(&ReportToTab, tab->GetWeakPtr(), ArchivePath(),
+      tab ? base::BindRepeating(&ReportToTab, tab->GetWeakPtr(), Archive(),
                                 clock_start)
           : base::BindRepeating(&ReportToTabsInProcess, render_process_id,
-                                ArchivePath(), clock_start);
+                                Archive(), clock_start);
   Archive()->BindFactory(
       partition ? ReplayMoment(partition->GetConfig()) : std::string(),
       std::move(receiver), std::move(passthrough), std::move(reporter));

@@ -23,6 +23,7 @@
 #include "chrome/browser/ui/webui/top_chrome/top_chrome_web_ui_controller.h"
 #include "chrome/browser/ui/webui/webui_embedding_context.h"
 #include "components/tabs/public/tab_interface.h"
+#include "components/warc/cdxj.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
 #include "net/base/net_errors.h"
@@ -36,6 +37,7 @@ using archive_side_panel::mojom::CaptureStatus;
 using archive_side_panel::mojom::CaptureStatusPtr;
 using archive_side_panel::mojom::Exchange;
 using archive_side_panel::mojom::ExchangePtr;
+using archive_side_panel::mojom::MissReason;
 
 WarcTabCapture* CaptureOf(content::WebContents* contents) {
   return contents ? WarcTabCapture::FromWebContents(contents) : nullptr;
@@ -91,6 +93,26 @@ ExchangePtr ToMojom(const WarcTabCapture::Exchange& exchange, size_t index) {
   return result;
 }
 
+MissReason ToMojom(warc::MissReason reason) {
+  switch (reason) {
+    case warc::MissReason::kUnknown:
+      return MissReason::kUnknown;
+    case warc::MissReason::kHostNotCaptured:
+      return MissReason::kHostNotCaptured;
+    case warc::MissReason::kPathNotCaptured:
+      return MissReason::kPathNotCaptured;
+    case warc::MissReason::kOtherQuery:
+      return MissReason::kOtherQuery;
+    case warc::MissReason::kOtherMethod:
+      return MissReason::kOtherMethod;
+    case warc::MissReason::kRangeNotHeld:
+      return MissReason::kRangeNotHeld;
+    case warc::MissReason::kUnreadable:
+      return MissReason::kUnreadable;
+  }
+  return MissReason::kUnknown;
+}
+
 ExchangePtr ToMojom(const warc::ReplayOutcome& request, size_t index) {
   ExchangePtr result = Exchange::New();
   result->index = base::saturated_cast<uint32_t>(index);
@@ -101,6 +123,13 @@ ExchangePtr ToMojom(const warc::ReplayOutcome& request, size_t index) {
   result->body_bytes = static_cast<double>(request.body_bytes);
   result->time_ms = ToMs(request.time);
   result->missing = request.missing;
+  if (request.missing) {
+    result->miss_reason = ToMojom(request.miss.reason);
+    result->nearest_url = request.miss.url;
+    result->nearest_method = request.miss.method;
+    result->nearest_captured_ms =
+        ToMs(warc::ParseIndexTimestamp(request.miss.timestamp));
+  }
   if (request.net_error != net::OK) {
     result->error = net::ErrorToShortString(request.net_error);
   }
@@ -246,9 +275,15 @@ void ArchivePageHandler::OnAgentError(const std::string& message) {
   page_->OnAgentEvent(AgentEvent::New(AgentEventKind::kError, message));
 }
 
-std::string ArchivePageHandler::AnswerQuery(const std::string& tool,
-                                            const base::DictValue& params) {
-  return AnswerArchiveQuery(GetTabContents(), tool, params);
+void ArchivePageHandler::AnswerQuery(
+    const std::string& tool,
+    const base::DictValue& params,
+    base::OnceCallback<void(std::string)> answer) {
+  if (tool == kSearchArchiveTool) {
+    SearchArchive(GetTabContents(), params, std::move(answer));
+    return;
+  }
+  std::move(answer).Run(AnswerArchiveQuery(GetTabContents(), tool, params));
 }
 
 void ArchivePageHandler::OnCaptureChanged(content::WebContents* web_contents) {

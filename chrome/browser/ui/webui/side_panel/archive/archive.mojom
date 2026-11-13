@@ -4,6 +4,24 @@
 
 module archive_side_panel.mojom;
 
+// Why a replay's archive held nothing for a request; see warc::MissReason.
+enum MissReason {
+  kUnknown,
+  // Nothing from the request's host was captured.
+  kHostNotCaptured,
+  // The host was, but nothing at the request's URL path.
+  kPathNotCaptured,
+  // The path was captured, with another query, and the request -- a page or
+  // a frame -- is answered only by its own URL.
+  kOtherQuery,
+  // The path was captured, but only by other methods.
+  kOtherMethod,
+  // A capture holds part of the resource, but not the bytes asked for.
+  kRangeNotHeld,
+  // The index lists a capture, but it could not be read.
+  kUnreadable,
+};
+
 // One exchange written into the tab's archive.
 struct Exchange {
   // Counts the capture's exchanges from 1, in the order they were written, so
@@ -25,6 +43,12 @@ struct Exchange {
   //
   // The archive held nothing for the request.
   bool missing;
+  // Why, when it held nothing; and the capture that came nearest, where one
+  // did: its URL, method and when it was made (0 when there is none).
+  MissReason miss_reason;
+  string nearest_url;
+  string nearest_method;
+  double nearest_captured_ms;
   // Why the request failed other than by missing, as a net error's short
   // name, or empty.
   string error;

@@ -887,5 +887,144 @@ TEST_F(WaczUrlLoaderFactoryTest, TellsOfARedirectLoopItEnded) {
   EXPECT_EQ(302, outcomes_[outcomes_.size() - 2].status_code);
 }
 
+// The miss reported for `request`, which the archive is expected to miss.
+// Kept apart from the tests so that each says only what it asks and what it
+// expects to be told.
+class WaczUrlLoaderFactoryMissTest : public WaczUrlLoaderFactoryTest {
+ protected:
+  MissExplanation MissFor(const network::ResourceRequest& request,
+                          std::string_view range = "") {
+    mojo::Remote<network::mojom::URLLoaderFactory> factory =
+        BuildFactory(kTimestamp, KeepOutcomes());
+    network::ResourceRequest ranged = request;
+    if (!range.empty()) {
+      ranged.headers.SetHeader(net::HttpRequestHeaders::kRange, range);
+    }
+    network::TestURLLoaderClient client;
+    Start(factory, ranged, &client);
+    client.RunUntilComplete();
+    EXPECT_EQ(1u, outcomes_.size());
+    if (outcomes_.empty()) {
+      return MissExplanation();
+    }
+    EXPECT_TRUE(outcomes_[0].missing);
+    return outcomes_[0].miss;
+  }
+
+  static network::ResourceRequest Get(
+      std::string_view url,
+      network::mojom::RequestDestination destination =
+          network::mojom::RequestDestination::kScript) {
+    network::ResourceRequest request;
+    request.url = GURL(std::string(url));
+    request.method = "GET";
+    request.destination = destination;
+    return request;
+  }
+};
+
+// A host the capture never reached is the replay asking for something new:
+// nothing about matching could have found it.
+TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfAHostNeverCaptured) {
+  // Keyed "net,example,ads)" and "net,examples)": each begins with the
+  // "net,example" of the host asked for, and neither is it.
+  AddResponse("https://ads.example.net/a.js", "HTTP/1.1 200 OK\r\n\r\n",
+              "x");
+  AddResponse("https://examples.net/a.js", "HTTP/1.1 200 OK\r\n\r\n", "x");
+
+  const MissExplanation miss = MissFor(Get("https://example.net/a.js"));
+  EXPECT_EQ(MissReason::kHostNotCaptured, miss.reason);
+  EXPECT_TRUE(miss.url.empty());
+}
+
+TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfAPathNeverCaptured) {
+  AddResponse("https://example.org/", "HTTP/1.1 200 OK\r\n\r\n", "page");
+  // Shares a prefix with the path asked for, and is not it.
+  AddResponse("https://example.org/app.js.map", "HTTP/1.1 200 OK\r\n\r\n",
+              "x");
+
+  const MissExplanation miss = MissFor(Get("https://example.org/app.js"));
+  EXPECT_EQ(MissReason::kPathNotCaptured, miss.reason);
+  EXPECT_TRUE(miss.url.empty());
+}
+
+// A page asked for with another query than it was captured with is not
+// answered with the capture -- and says which capture that was, since that is
+// the page the visitor probably meant.
+TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfAPageCapturedWithAnotherQuery) {
+  AddResponse(
+      "https://example.org/frame?uuid=9f8e7d6c-5b4a-4321-8fed-cba987654321&"
+      "w=300",
+      "HTTP/1.1 200 OK\r\n\r\n", "frame", "20260101115950");
+
+  const MissExplanation miss = MissFor(
+      Get("https://example.org/frame?"
+          "uuid=50b0c9e2-bcca-4206-a3b7-068d73120f22&w=300",
+          network::mojom::RequestDestination::kIframe));
+  EXPECT_EQ(MissReason::kOtherQuery, miss.reason);
+  EXPECT_EQ(
+      "https://example.org/frame?uuid=9f8e7d6c-5b4a-4321-8fed-cba987654321&"
+      "w=300",
+      miss.url);
+  EXPECT_EQ("GET", miss.method);
+  EXPECT_EQ("20260101115950", miss.timestamp);
+}
+
+TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfAPathCapturedByAnotherMethod) {
+  AddResponse("https://example.org/api", "HTTP/1.1 200 OK\r\n\r\n", "{}");
+
+  network::ResourceRequest request = Get("https://example.org/api");
+  request.method = "POST";
+  request.destination = network::mojom::RequestDestination::kEmpty;
+  const MissExplanation miss = MissFor(request);
+  EXPECT_EQ(MissReason::kOtherMethod, miss.reason);
+  EXPECT_EQ("https://example.org/api", miss.url);
+  EXPECT_EQ("GET", miss.method);
+}
+
+// And the other way about: the method is read out of the key a capture is
+// filed under, since a URL does not carry it.
+TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfAPathCapturedOnlyByAPost) {
+  const GURL api("https://example.org/graphql");
+  AddResponseUnder(RequestKey(api, "POST", "application/json", "{\"q\":1}"),
+                   api.spec(), "HTTP/1.1 200 OK\r\n\r\n", "{}");
+
+  const MissExplanation miss = MissFor(Get(api.spec()));
+  EXPECT_EQ(MissReason::kOtherMethod, miss.reason);
+  EXPECT_EQ(api.spec(), miss.url);
+  EXPECT_EQ("POST", miss.method);
+}
+
+TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfARangeThePartDoesNotHold) {
+  AddResponse("https://example.org/v.mp4",
+              "HTTP/1.1 206 Partial Content\r\n"
+              "Content-Range: bytes 2-5/10\r\n\r\n",
+              "2345");
+
+  const MissExplanation miss =
+      MissFor(Get("https://example.org/v.mp4",
+                  network::mojom::RequestDestination::kVideo),
+              "bytes=4-8");
+  EXPECT_EQ(MissReason::kRangeNotHeld, miss.reason);
+  EXPECT_EQ("https://example.org/v.mp4", miss.url);
+  EXPECT_EQ(kTimestamp, miss.timestamp);
+}
+
+// An index can name a record its container does not hold, where a container
+// was put together from part of a larger capture. The archive has the
+// resource in name only, which is a different fault from not having it.
+TEST_F(WaczUrlLoaderFactoryMissTest, TellsOfACaptureThatCannotBeRead) {
+  AddResponse("https://example.org/", "HTTP/1.1 200 OK\r\n\r\n", "page");
+  index_ += base::StrCat(
+      {ToSurt(GURL("https://example.org/lost.css")), " ", kTimestamp,
+       " {\"url\": \"https://example.org/lost.css\", \"status\": \"200\", "
+       "\"length\": \"10\", \"offset\": \"0\", "
+       "\"filename\": \"elsewhere.warc.gz\"}\n"});
+
+  const MissExplanation miss = MissFor(Get("https://example.org/lost.css"));
+  EXPECT_EQ(MissReason::kUnreadable, miss.reason);
+  EXPECT_EQ("https://example.org/lost.css", miss.url);
+}
+
 }  // namespace
 }  // namespace warc

@@ -38,12 +38,12 @@ void ReplayLog::RemoveObserver(Observer* observer) {
 
 // static
 void ReplayLog::Record(content::WebContents* web_contents,
-                       const base::FilePath& archive,
+                       scoped_refptr<warc::WaczArchive> archive,
                        base::Time moment,
                        const warc::ReplayOutcome& request) {
   ReplayLog* log = FromWebContents(web_contents);
   if (!log) {
-    CreateForWebContents(web_contents, archive, moment);
+    CreateForWebContents(web_contents, std::move(archive), moment);
     log = FromWebContents(web_contents);
     for (Observer& observer : Observers()) {
       observer.OnReplayStarted(web_contents);
@@ -53,7 +53,7 @@ void ReplayLog::Record(content::WebContents* web_contents,
 }
 
 ReplayLog::ReplayLog(content::WebContents* web_contents,
-                     base::FilePath archive,
+                     scoped_refptr<warc::WaczArchive> archive,
                      base::Time moment)
     : content::WebContentsUserData<ReplayLog>(*web_contents),
       serial_(NextSerial()),

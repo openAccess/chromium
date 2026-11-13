@@ -12434,7 +12434,7 @@ Check your passwords anytime in <ph name="GOOGLE_PASSWORD_MANAGER">$1<ex>Google 
         Assistant
       </message>
       <message name="IDS_ARCHIVE_SIDE_PANEL_ASSISTANT_HINT" desc="Explanation shown in the archive side panel's assistant view before anything has been asked. Pi is the name of an AI agent program the user installed.">
-        Ask about what this tab archived or replayed, such as “Why are images missing?” The assistant is Pi, running on this computer with your Pi login. It can read this tab's requests, and nothing else.
+        Ask about what this tab archived or replayed, such as “Why are images missing?” The assistant is Pi, running on this computer with your Pi login. It can read this tab's requests and search the archive it replays, and nothing else.
       </message>
       <message name="IDS_ARCHIVE_SIDE_PANEL_ASSISTANT_PLACEHOLDER" desc="Placeholder of the box in the archive side panel where the user types a question for the AI assistant.">
         Ask about this tab's requests
@@ -12447,6 +12447,45 @@ Check your passwords anytime in <ph name="GOOGLE_PASSWORD_MANAGER">$1<ex>Google 
       </message>
       <message name="IDS_ARCHIVE_SIDE_PANEL_CAPTURED_AT" desc="Line in the tooltip of a replayed request in the archive side panel, giving when the response it was answered with was captured.">
         Captured <ph name="MOMENT">$1<ex>10/30/2026, 10:56:05 PM</ex></ph>
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_HOST_SHORT" desc="Very short label (about 6 characters) in the Size column of the archive side panel, shown instead of a size for a replayed request the web archive has no response for, saying why. Here: nothing from the request's host (web server) was ever captured.">
+        no host
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_PATH_SHORT" desc="Very short label (about 6 characters) in the Size column of the archive side panel, shown instead of a size for a replayed request the web archive has no response for, saying why. Here: the request's URL was never captured, though its host was.">
+        never
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_QUERY_SHORT" desc="Very short label (about 6 characters) in the Size column of the archive side panel, shown instead of a size for a replayed request the web archive has no response for, saying why. Here: the URL was captured with a different query string (the part after '?').">
+        query
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_METHOD_SHORT" desc="Very short label (about 6 characters) in the Size column of the archive side panel, shown instead of a size for a replayed request the web archive has no response for, saying why. Here: the URL was captured, but requested with a different HTTP method, such as GET instead of POST.">
+        method
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_RANGE_SHORT" desc="Very short label (about 6 characters) in the Size column of the archive side panel, shown instead of a size for a replayed request the web archive has no response for, saying why. Here: only part of the file was captured, not the byte range requested.">
+        range
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_UNREADABLE_SHORT" desc="Very short label (about 6 characters) in the Size column of the archive side panel, shown instead of a size for a replayed request the web archive has no response for, saying why. Here: the archive lists a capture, but it could not be read.">
+        unread
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_HOST" desc="Tooltip in the archive side panel for a replayed request that is missing because nothing from its host (web server) was ever captured.">
+        Never captured: nothing from this host is in the archive.
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_PATH" desc="Tooltip in the archive side panel for a replayed request that is missing because its URL was never captured, though other URLs on the same host were.">
+        Never captured: the archive holds this host, but nothing at this URL.
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_QUERY" desc="Tooltip in the archive side panel for a replayed page or frame that is missing because the archive holds it only with a different query string. Pages and frames are only answered by their exact URL.">
+        Captured with another query: <ph name="URL">$1<ex>https://example.com/frame?uuid=abc</ex></ph>. A page or frame is answered only by its own URL.
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_METHOD" desc="Tooltip in the archive side panel for a replayed request that is missing because the archive holds its URL only as requested with a different HTTP method.">
+        Captured only by another method: <ph name="METHOD">$1<ex>GET</ex></ph> <ph name="URL">$2<ex>https://example.com/api</ex></ph>
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_RANGE" desc="Tooltip in the archive side panel for a replayed request for part of a file (a byte range) that is missing because the archive holds a different part of the file only.">
+        Only part of this was captured, and not the bytes asked for.
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_MISS_UNREADABLE" desc="Tooltip in the archive side panel for a replayed request that is missing because the archive's index lists a capture of it, but the capture itself could not be read from the archive.">
+        The archive lists a capture of this, but it could not be read.
+      </message>
+      <message name="IDS_ARCHIVE_SIDE_PANEL_ARCHIVE_UNREADABLE" desc="Tooltip in the archive side panel for a replayed request that is missing because the web archive being replayed could not be read at all.">
+        The archive could not be read.
       </message>
 
       <!-- Tab Context Menu -->

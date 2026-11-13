@@ -11,11 +11,13 @@
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_temp_dir.h"
+#include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/run_loop.h"
 #include "base/strings/string_util.h"
 #include "base/process/process.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/test/scoped_command_line.h"
 #include "base/scoped_environment_variable_override.h"
 #include "base/test/task_environment.h"
@@ -44,10 +46,13 @@ class RecordingDelegate : public ArchiveAgent::Delegate {
       std::move(on_error_).Run();
     }
   }
-  std::string AnswerQuery(const std::string& tool,
-                          const base::DictValue& params) override {
+  // Answers later rather than at once, as an answer found off the thread is.
+  void AnswerQuery(const std::string& tool,
+                   const base::DictValue& params,
+                   base::OnceCallback<void(std::string)> answer) override {
     queries_.push_back(tool);
-    return answer_;
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(std::move(answer), answer_));
   }
 
   std::string text_;

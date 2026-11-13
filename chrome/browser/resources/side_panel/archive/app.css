@@ -176,7 +176,7 @@
   border-bottom: 1px solid var(--cr-separator-color);
   display: grid;
   gap: 6px;
-  grid-template-columns: 42px 52px 56px minmax(0, 1fr);
+  grid-template-columns: 42px 52px 60px minmax(0, 1fr);
   padding: 3px 12px;
 }
 
@@ -195,6 +195,12 @@
 
 .size {
   text-align: end;
+}
+
+/* Why a request missed, where its size would be. */
+.reason {
+  color: var(--cr-secondary-text-color);
+  font-style: italic;
 }
 
 .error {

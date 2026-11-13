@@ -78,6 +78,52 @@ struct ReplayRequest {
   bool accept_closest = false;
 };
 
+// Why an archive holds nothing that answers a request -- which says whether
+// the capture or the replay is the one to look at.
+enum class MissReason {
+  // Not known, or not a miss.
+  kUnknown,
+  // Nothing was captured from the request's host. Most often a page reaching,
+  // on replay, somewhere it did not reach when captured: an ad picked anew, a
+  // host chosen as the page runs.
+  kHostNotCaptured,
+  // The host was captured, but nothing at the request's URL path: the capture
+  // never saw this resource asked for.
+  kPathNotCaptured,
+  // The path was captured by the request's method, but with another query --
+  // and the request is one that only a capture of its own URL answers, a page
+  // or a frame (see ReplayRequest::accept_closest).
+  kOtherQuery,
+  // The path was captured, but only by other methods: a POST where the
+  // capture holds GETs, say.
+  kOtherMethod,
+  // A capture answers the request, but it holds part of the resource only,
+  // and not the bytes asked for.
+  kRangeNotHeld,
+  // The index lists a capture that would answer the request, but its record
+  // could not be read -- or the archive could not be read at all.
+  kUnreadable,
+};
+
+// Why a request missed, and the capture that came nearest to answering it.
+struct MissExplanation {
+  MissExplanation();
+  MissExplanation(const MissExplanation&);
+  MissExplanation& operator=(const MissExplanation&);
+  MissExplanation(MissExplanation&&);
+  MissExplanation& operator=(MissExplanation&&);
+  ~MissExplanation();
+
+  MissReason reason = MissReason::kUnknown;
+
+  // The nearest capture, where there is one: the URL it was captured for,
+  // the method it was asked by, and when, as the index writes a time. Empty
+  // for a host or a path never captured.
+  std::string url;
+  std::string method;
+  std::string timestamp;
+};
+
 // The 14 digits an index keys a capture time by, from either that or the
 // RFC 3339 a page list writes ("2026-09-10T20:13:54Z"). The two halves of a
 // WACZ spell a time differently, so anything replaying a page from the page
@@ -145,6 +191,16 @@ class WaczCollection {
   // caller.
   std::optional<ArchivedResponse> Lookup(const ReplayRequest& request,
                                          std::string_view timestamp);
+
+  // Why Lookup() finds nothing for `request` at `timestamp`, from what the
+  // index holds of its host and its path. Asked of a request that Lookup()
+  // does answer, says kUnreadable, since then only reading it could fail.
+  //
+  // A miss is a fact about the archive, and does not say whether the capture
+  // or the replay fell short. This does: a host or path never captured is the
+  // capture's; one captured in other words is the replay's to match.
+  MissExplanation ExplainMiss(const ReplayRequest& request,
+                              std::string_view timestamp) const;
 
   // The pages the capture visited. Replay has to start somewhere, and this is
   // the only record of which URLs were pages rather than the images and

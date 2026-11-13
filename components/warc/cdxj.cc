@@ -213,16 +213,11 @@ const CdxjEntry* FindClosestCapture(
     std::string_view key,
     std::string_view timestamp,
     base::FunctionRef<bool(const CdxjEntry&)> accept) {
-  // A key's path ends at its first "?". Its captures are those keyed by the
-  // path alone and those keyed by the path and a query, which sort together
-  // after it -- though not straight after: "/a-b" sorts between "/a" and
-  // "/a?", so the two are found apart.
   const size_t query_start = key.find('?');
   const std::string_view path = key.substr(0, query_start);
   const KeyQuery wanted = ParseKeyQuery(query_start == std::string_view::npos
                                             ? std::string_view()
                                             : key.substr(query_start + 1));
-  const std::string with_query = base::StrCat({path, "?"});
 
   const base::Time target = ParseIndexTimestamp(timestamp);
   const CdxjEntry* closest = nullptr;
@@ -247,19 +242,66 @@ const CdxjEntry* FindClosestCapture(
     }
   };
 
+  ForEachCaptureOfPath(entries, key, [&](const CdxjEntry& entry) {
+    consider(entry, entry.key.size() > path.size()
+                        ? std::string_view(entry.key).substr(path.size() + 1)
+                        : std::string_view());
+  });
+  return closest;
+}
+
+void ForEachCaptureOfPath(base::span<const CdxjEntry> entries,
+                          std::string_view key,
+                          base::FunctionRef<void(const CdxjEntry&)> visit) {
+  // A key's path ends at its first "?". Its captures are those keyed by the
+  // path alone and those keyed by the path and a query, which sort together
+  // after it -- though not straight after: "/a-b" sorts between "/a" and
+  // "/a?", so the two are found apart.
+  const std::string_view path = key.substr(0, key.find('?'));
+  const std::string with_query = base::StrCat({path, "?"});
   const auto by_key = [](const CdxjEntry& entry, std::string_view k) {
     return entry.key < k;
   };
   for (auto it = std::lower_bound(entries.begin(), entries.end(), path, by_key);
        it != entries.end() && it->key == path; ++it) {
-    consider(*it, std::string_view());
+    visit(*it);
   }
   for (auto it = std::lower_bound(entries.begin(), entries.end(),
                                   std::string_view(with_query), by_key);
        it != entries.end() && it->key.starts_with(with_query); ++it) {
-    consider(*it, std::string_view(it->key).substr(with_query.size()));
+    visit(*it);
   }
-  return closest;
+}
+
+base::span<const CdxjEntry> CapturesOfHost(base::span<const CdxjEntry> entries,
+                                           std::string_view key) {
+  const size_t host_end = key.find(')');
+  if (host_end == std::string_view::npos) {
+    return {};
+  }
+  // Up to and including the ")", so that "com,example)" is not taken for the
+  // start of "com,example,www)" or "com,examples)".
+  const std::string_view host = key.substr(0, host_end + 1);
+  const size_t begin = static_cast<size_t>(std::distance(
+      entries.begin(),
+      std::lower_bound(entries.begin(), entries.end(), host,
+                       [](const CdxjEntry& entry, std::string_view k) {
+                         return entry.key < k;
+                       })));
+  size_t end = begin;
+  while (end < entries.size() && entries[end].key.starts_with(host)) {
+    ++end;
+  }
+  return entries.subspan(begin, end - begin);
+}
+
+std::string KeyMethod(std::string_view key) {
+  const size_t query_start = key.find('?');
+  const std::string_view method =
+      query_start == std::string_view::npos
+          ? std::string_view()
+          : ParseKeyQuery(key.substr(query_start + 1)).method;
+  return method.empty() ? std::string("GET") : base::ToUpperASCII(method);
 }
 
 }  // namespace warc

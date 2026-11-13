@@ -75,8 +75,9 @@ class ArchivePageHandler : public archive_side_panel::mojom::PageHandler,
                        const std::string& arguments) override;
   void OnAgentIdle() override;
   void OnAgentError(const std::string& message) override;
-  std::string AnswerQuery(const std::string& tool,
-                          const base::DictValue& params) override;
+  void AnswerQuery(const std::string& tool,
+                   const base::DictValue& params,
+                   base::OnceCallback<void(std::string)> answer) override;
 
  private:
   // The tab the panel belongs to; null outside one.

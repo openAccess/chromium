@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/files/file_path.h"
+#include "base/functional/callback.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/weak_ptr.h"
 #include "base/process/process.h"
@@ -33,9 +34,15 @@ inline constexpr char kModelSwitch[] = "archive-agent-model";
 //   archive, and its counts.
 // "list_requests": the tab's requests, filtered -- `which` is one of "all",
 //   "missing", "failed", "errors" or "closest"; `contains` matches the URL;
-//   `limit` (at most 200) and `newest_first` choose which are returned.
-// "summarize_requests": the tab's requests counted by host, type and status.
-inline constexpr char kTools[] = "tab_status,list_requests,summarize_requests";
+//   `limit` (at most 200) and `newest_first` choose which are returned. A
+//   missing request says why it is missing.
+// "summarize_requests": the tab's requests counted by host, type and status,
+//   and the missing ones by why.
+// "search_archive": what the archive a replay tab replays holds -- at `url`'s
+//   path, by any method and with any query, or wherever the URL `contains`
+//   some text -- whether or not the tab asked for it.
+inline constexpr char kTools[] =
+    "tab_status,list_requests,summarize_requests,search_archive";
 
 // An assistant that can look at -- and only look at -- what one tab archived
 // or replayed: Pi (pi.dev), run as a child process in its RPC mode and spoken
@@ -75,10 +82,12 @@ class ArchiveAgent {
     // because of it, it is started again when next asked.
     virtual void OnAgentError(const std::string& message) = 0;
 
-    // The assistant's `tool` asks, with `params`; returns the answer, as the
-    // JSON the tool hands back to the model.
-    virtual std::string AnswerQuery(const std::string& tool,
-                                    const base::DictValue& params) = 0;
+    // The assistant's `tool` asks, with `params`; `answer` is to be run with
+    // the answer, as the JSON the tool hands back to the model -- now, or once
+    // it is known, since some answers are found off this thread.
+    virtual void AnswerQuery(const std::string& tool,
+                             const base::DictValue& params,
+                             base::OnceCallback<void(std::string)> answer) = 0;
 
    protected:
     virtual ~Delegate() = default;
@@ -118,6 +127,7 @@ class ArchiveAgent {
   void Send(base::DictValue command);
   void OnLine(const std::string& line);
   void OnUIRequest(const base::DictValue& request);
+  void OnQueryAnswered(int run, const std::string& id, std::string answer);
   void OnEnded();
   void OnLogRead(const std::string& tail);
 
@@ -130,6 +140,9 @@ class ArchiveAgent {
   State state_ = State::kNotStarted;
   bool busy_ = false;
   int next_id_ = 0;
+  // Counts the times Pi has been started, so that an answer to a query from
+  // one run is not handed to the next.
+  int run_ = 0;
 
   // Questions asked before Pi was running, to ask once it is.
   std::vector<std::string> waiting_;

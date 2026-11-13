@@ -11,7 +11,7 @@ import {CrLitElement} from 'chrome://resources/lit/v3_0/lit.rollup.js';
 import {getCss} from './app.css.js';
 import {getHtml} from './app.html.js';
 import type {AgentEvent, BrowserProxy, CaptureStatus, Exchange} from './archive.mojom-webui.js';
-import {AgentEventKind, browserProxyFactory, CaptureState} from './archive.mojom-webui.js';
+import {AgentEventKind, browserProxyFactory, CaptureState, MissReason} from './archive.mojom-webui.js';
 
 // The most rows drawn at once. The panel keeps every exchange the browser
 // sends, and draws the latest of those that pass the filter.
@@ -340,6 +340,7 @@ export class ArchiveAppElement extends CrLitElement {
           const text = `${exchange.method} ${exchange.statusCode} ${
                            exchange.mimeType} ${exchange.destination} ${
                            exchange.missing ? 'missing' : ''} ${
+                           this.missFilterWords_(exchange)} ${
                            exchange.error} ${exchange.capturedUrl ? 'closest' : ''} ${
                            exchange.url}`.toLowerCase();
           return terms.every(term => text.includes(term));
@@ -383,7 +384,10 @@ export class ArchiveAppElement extends CrLitElement {
   }
 
   protected sizeText_(exchange: Exchange): string {
-    if (exchange.missing || exchange.error) {
+    if (exchange.missing) {
+      return this.missText_(exchange) || '—';
+    }
+    if (exchange.error) {
       return '—';
     }
     return (exchange.truncated ? '⚠ ' : '') + formatBytes(exchange.bodyBytes);
@@ -394,7 +398,79 @@ export class ArchiveAppElement extends CrLitElement {
   }
 
   protected sizeTitle_(exchange: Exchange): string {
+    if (exchange.missing) {
+      return this.missTitle_(exchange);
+    }
     return exchange.truncated ? loadTimeData.getString('truncated') : '';
+  }
+
+  // Why a request the archive held nothing for missed, in a word or two;
+  // empty when that is not known.
+  protected missText_(exchange: Exchange): string {
+    switch (exchange.missReason) {
+      case MissReason.kHostNotCaptured:
+        return loadTimeData.getString('missHostShort');
+      case MissReason.kPathNotCaptured:
+        return loadTimeData.getString('missPathShort');
+      case MissReason.kOtherQuery:
+        return loadTimeData.getString('missQueryShort');
+      case MissReason.kOtherMethod:
+        return loadTimeData.getString('missMethodShort');
+      case MissReason.kRangeNotHeld:
+        return loadTimeData.getString('missRangeShort');
+      case MissReason.kUnreadable:
+        return loadTimeData.getString('missUnreadableShort');
+      default:
+        return '';
+    }
+  }
+
+  // Why it missed, in full, and when the capture that came nearest was made.
+  protected missTitle_(exchange: Exchange): string {
+    let why = '';
+    switch (exchange.missReason) {
+      case MissReason.kHostNotCaptured:
+        why = loadTimeData.getString('missHost');
+        break;
+      case MissReason.kPathNotCaptured:
+        why = loadTimeData.getString('missPath');
+        break;
+      case MissReason.kOtherQuery:
+        why = loadTimeData.getStringF('missQuery', exchange.nearestUrl);
+        break;
+      case MissReason.kOtherMethod:
+        why = loadTimeData.getStringF(
+            'missMethod', exchange.nearestMethod, exchange.nearestUrl);
+        break;
+      case MissReason.kRangeNotHeld:
+        why = loadTimeData.getString('missRange');
+        break;
+      case MissReason.kUnreadable:
+        why = loadTimeData.getString(
+            exchange.nearestUrl ? 'missUnreadable' : 'archiveUnreadable');
+        break;
+      default:
+        return loadTimeData.getString('missing');
+    }
+    if (exchange.nearestCapturedMs) {
+      why += '\n' +
+          loadTimeData.getStringF(
+              'capturedAt',
+              new Date(exchange.nearestCapturedMs).toLocaleString());
+    }
+    return why;
+  }
+
+  // What the filter finds a miss by: its label, and "never" for both kinds
+  // of never captured.
+  private missFilterWords_(exchange: Exchange): string {
+    if (!exchange.missing) {
+      return '';
+    }
+    const never = exchange.missReason === MissReason.kHostNotCaptured ||
+        exchange.missReason === MissReason.kPathNotCaptured;
+    return `${this.missText_(exchange)} ${
+        never ? loadTimeData.getString('missPathShort') : ''}`;
   }
 
   // The URL without its scheme, which says little and takes room.
@@ -407,6 +483,9 @@ export class ArchiveAppElement extends CrLitElement {
       `${exchange.method} ${exchange.url}`,
       new Date(exchange.timeMs).toLocaleTimeString(),
     ];
+    if (exchange.missing) {
+      lines.push(this.missTitle_(exchange));
+    }
     if (exchange.capturedUrl) {
       lines.push(this.answeredByTitle_(exchange));
     }
