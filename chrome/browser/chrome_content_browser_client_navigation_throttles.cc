@@ -46,6 +46,7 @@
 #include "chrome/browser/ui/passwords/password_manager_navigation_throttle.h"
 #include "chrome/browser/ui/passwords/well_known_change_password_navigation_throttle.h"
 #include "chrome/browser/ui/web_applications/navigation_capturing_redirection_throttle.h"
+#include "chrome/browser/wacz_replay.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
@@ -299,6 +300,10 @@ void CreateAndAddChromeThrottlesForNavigation(
     // should be cared by adding an attribute flag to
     // NavigationThrottleRegistry::AddThrottle().
     page_load_metrics::MetricsNavigationThrottle::CreateAndAdd(registry);
+
+    // A new visit in a replay tab starts from empty storage, as its capture
+    // did.
+    wacz_replay::AddVisitThrottle(registry);
 
     // Appends the X-Geo header to the navigation request if needed.
     if (auto throttle =

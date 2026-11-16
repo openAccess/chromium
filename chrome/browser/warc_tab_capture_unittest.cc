@@ -69,8 +69,8 @@ TEST_F(WarcTabCaptureTest, OnlyACapturePartitionNamesACapture) {
   command_line.GetProcessCommandLine()->AppendSwitchASCII(
       switches::kWaczReplay, "/tmp/capture.wacz");
   EXPECT_EQ(std::nullopt,
-            WarcTabCapture::CaptureIdOfPartition(
-                wacz_replay::ReplayPartition(&profile_, "20260301120000")));
+            WarcTabCapture::CaptureIdOfPartition(wacz_replay::ReplayPartition(
+                &profile_, "20260301120000", token)));
 
   // A capture partition's name that is not a capture's id names none.
   EXPECT_EQ(std::nullopt, WarcTabCapture::CaptureIdOfPartition(

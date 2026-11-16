@@ -12,7 +12,6 @@
 
 #include "base/command_line.h"
 #include "base/containers/flat_set.h"
-#include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -21,7 +20,9 @@
 #include "base/no_destructor.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/task/bind_post_task.h"
 #include "base/task/thread_pool.h"
+#include "base/unguessable_token.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
@@ -32,13 +33,16 @@
 #include "components/warc/wacz_collection.h"
 #include "components/warc/wacz_url_loader_factory.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/navigation_throttle.h"
+#include "content/public/browser/navigation_throttle_registry.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
 #include "content/public/browser/site_instance.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/content_switches.h"
-#include "crypto/hash.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "ui/base/page_transition_types.h"
 #include "url/gurl.h"
 
@@ -46,17 +50,9 @@ namespace wacz_replay {
 
 namespace {
 
-// Between the archive's key and the moment in a partition's name. Neither
-// half can contain it: one is hex and the other digits.
+// Between the tab and the moment in a partition's name. Neither half can
+// contain it: one is hex and the other digits.
 constexpr char kMomentSeparator = '-';
-
-// Enough of a digest to name an archive by. Collisions would merge two
-// captures' storage; sixty-four bits puts that out of reach without making the
-// name unreadable in a trace.
-std::string ArchiveKey(const base::FilePath& path) {
-  const auto digest = crypto::hash::Sha256(path.value());
-  return base::HexEncodeLower(base::span(digest).first(8u));
-}
 
 base::FilePath ArchivePath() {
   return base::CommandLine::ForCurrentProcess()->GetSwitchValuePath(
@@ -136,7 +132,9 @@ void OpenReplayTab(BrowserWindowInterface* browser,
   std::unique_ptr<content::WebContents> contents =
       content::WebContents::Create(content::WebContents::CreateParams(
           profile, content::SiteInstance::CreateForFixedStoragePartition(
-                       profile, url, ReplayPartition(profile, moment))));
+                       profile, url,
+                       ReplayPartition(profile, moment,
+                                       base::UnguessableToken::Create()))));
   contents->GetController().LoadURL(url, content::Referrer(),
                                     ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
                                     std::string());
@@ -200,6 +198,33 @@ std::vector<Landing> ReadLandings(base::FilePath path, std::vector<GURL> urls) {
   return landings;
 }
 
+// Empties a replay tab's storage before the first request of a visit, and
+// holds the request until it is empty.
+class VisitThrottle : public content::NavigationThrottle {
+ public:
+  explicit VisitThrottle(content::NavigationThrottleRegistry& registry)
+      : content::NavigationThrottle(registry) {}
+
+  ThrottleCheckResult WillStartRequest() override {
+    navigation_handle()
+        ->GetWebContents()
+        ->GetPrimaryMainFrame()
+        ->GetStoragePartition()
+        ->ClearData(content::StoragePartition::REMOVE_DATA_MASK_ALL,
+                    blink::StorageKey(), base::Time(), base::Time::Max(),
+                    // Posted, so that it cannot resume what has not yet
+                    // been deferred.
+                    base::BindPostTaskToCurrentDefault(base::BindOnce(
+                        &VisitThrottle::Resume, weak_factory_.GetWeakPtr())));
+    return DEFER;
+  }
+
+  const char* GetNameForLogging() override { return "WaczReplayVisitThrottle"; }
+
+ private:
+  base::WeakPtrFactory<VisitThrottle> weak_factory_{this};
+};
+
 void OpenTabs(base::WeakPtr<BrowserWindowInterface> browser,
               std::vector<Landing> landings) {
   if (!browser) {
@@ -219,12 +244,13 @@ bool IsEnabled() {
 
 content::StoragePartitionConfig ReplayPartition(
     content::BrowserContext* browser_context,
-    const std::string& moment) {
+    const std::string& moment,
+    const base::UnguessableToken& tab) {
   // Spelled one way, so that a moment from the page list and the same moment
   // from an index are one partition rather than two.
   return content::StoragePartitionConfig::Create(
       browser_context, kPartitionDomain,
-      base::StrCat({ArchiveKey(ArchivePath()), std::string(1, kMomentSeparator),
+      base::StrCat({tab.ToString(), std::string(1, kMomentSeparator),
                     warc::ToIndexTimestamp(moment)}),
       /*in_memory=*/true);
 }
@@ -269,6 +295,15 @@ bool ServesFromArchive(content::RenderFrameHost* frame, int render_process_id) {
   const content::StoragePartition* partition =
       PartitionOf(frame, render_process_id);
   return partition && IsReplayPartition(partition->GetConfig());
+}
+
+void AddVisitThrottle(content::NavigationThrottleRegistry& registry) {
+  content::NavigationHandle& navigation = registry.GetNavigationHandle();
+  if (!navigation.IsInPrimaryMainFrame() || navigation.IsRendererInitiated() ||
+      navigation.IsHistory() || !IsReplayTab(navigation.GetWebContents())) {
+    return;
+  }
+  registry.AddThrottle(std::make_unique<VisitThrottle>(registry));
 }
 
 void OpenReplayTabs(BrowserWindowInterface* browser, std::vector<GURL> urls) {

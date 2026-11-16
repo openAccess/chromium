@@ -5030,6 +5030,8 @@ source_set("warc_unit_tests") {
     "//chrome/test/base:testing_profile",
     "//content/public/browser",
     "//content/test:test_support",
+    "//net",
+    "//services/network/public/mojom",
     "//testing/gtest",
     "//url",
   ]

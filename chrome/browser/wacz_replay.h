@@ -21,10 +21,12 @@ class BrowserWindowInterface;
 
 namespace base {
 class CommandLine;
+class UnguessableToken;
 }  // namespace base
 
 namespace content {
 class BrowserContext;
+class NavigationThrottleRegistry;
 class RenderFrameHost;
 class RenderProcessHost;
 }  // namespace content
@@ -40,7 +42,7 @@ namespace wacz_replay {
 // of a tab without the decision having to move.
 bool IsEnabled();
 
-// The storage partition archived content is replayed in, at `moment`.
+// The storage partition the replay tab `tab` replays in, at `moment`.
 //
 // Serving an archived origin *as* that origin is the whole point of replaying
 // in a browser, and it is also what makes a partition of its own necessary:
@@ -51,25 +53,25 @@ bool IsEnabled();
 // exits -- including the things an archived response header would otherwise
 // set for good, an HSTS entry above all.
 //
-// Named for the archive, not for the browser: two archives are two captures of
-// the web, and what one of them stored is no more the other's than a live
-// site's would be. The name is a digest of the path as it was given, so the
-// same archive opened twice is one partition; the same archive under two
-// spellings is two, which costs nothing when neither survives the browser.
+// Named for the tab, and nothing wider. A capture starts from empty storage
+// (WarcTabCapture::StartInEmptyState), so what a replayed page finds stored
+// should be what this replay stored since its visit began, and never what
+// another tab stored: two tabs on one archive, even at one moment, are two
+// visits, as two captures of one site were. AddVisitThrottle() keeps one tab's
+// visits apart in the same way.
 //
-// Named for the moment too, which is what makes the moment a tab's rather
-// than the archive's. A replay serves one moment to everything in its
-// partition -- a frame, its iframes, and the workers that belong to a process
-// rather than a frame -- and a process serves one partition, so the partition
-// is the one thing every request already knows that can carry it. Two tabs at
-// two moments are two visits to the web, weeks apart perhaps, and keep apart
-// what each stored as those visits did; two tabs at one moment share it.
+// Named for the moment too, which is how the moment reaches everything in the
+// tab. A replay serves one moment to everything in its partition -- a frame,
+// its iframes, and the workers that belong to a process rather than a frame --
+// and a process serves one partition, so the partition is the one thing every
+// request already knows that can carry it.
 //
 // `moment` may be written either way a WACZ writes one, and is the same
 // partition either way. Empty means the earliest capture of each URL.
 content::StoragePartitionConfig ReplayPartition(
     content::BrowserContext* browser_context,
-    const std::string& moment);
+    const std::string& moment,
+    const base::UnguessableToken& tab);
 
 // The moment a replay partition serves, as an index writes it: the inverse of
 // ReplayPartition(). Empty for the earliest capture, or for a partition that
@@ -109,6 +111,26 @@ void AppendRendererSwitches(content::RenderProcessHost& process,
 // command line: a frame reaches an archive because of where it is, and a frame
 // outside a replay partition cannot reach one however the browser was started.
 bool ServesFromArchive(content::RenderFrameHost* frame, int render_process_id);
+
+// Holds a navigation that begins a new visit in a replay tab until the tab's
+// storage is empty again.
+//
+// A capture begins from empty storage, so what it holds of a site is what the
+// site sends a first-time visitor. A replay that keeps its storage from one
+// visit to the next drifts from that the second time a site is opened: a
+// consent record or a visitor id stored on the first visit sends the page down
+// the returning visitor's path, whose requests the capture never made and the
+// archive does not hold.
+//
+// A visit is what the person starts: an address typed or chosen, a bookmark, a
+// reload. Following a link, a page sending itself on, going back or forward --
+// those carry on the visit they are part of, with what it has stored so far,
+// as they did when it was captured.
+//
+// The storage emptied is the tab's partition, which a window the tab opened
+// shares; a visit begun in either begins it for both. What a page writes as it
+// is left, after the emptying, is still there for the visit that follows.
+void AddVisitThrottle(content::NavigationThrottleRegistry& registry);
 
 // Opens the replay tabs this browser was started for: one for each of `urls`,
 // or -- given none -- one on the first page of the archive's own page list.
