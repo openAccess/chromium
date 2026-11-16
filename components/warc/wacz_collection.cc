@@ -10,6 +10,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/functional/function_ref.h"
 #include "base/json/json_reader.h"
 #include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
@@ -284,6 +285,19 @@ std::optional<ArchivedResponse> ParseStoredResponse(
   return response;
 }
 
+// Which captures a lookup may choose among.
+using Accept = base::FunctionRef<bool(const CdxjEntry&)>;
+
+// Whether the site turned the visitor away rather than answering for the
+// page: a sign-in wall or a bot check, or a visitor asking too often, any of
+// which may let the same visitor in a moment later. Not a page that is not
+// there -- a 404 is the site's answer about the page, and is what the capture
+// holds of it.
+bool TurnedAway(const CdxjEntry& capture) {
+  return capture.status == "401" || capture.status == "403" ||
+         capture.status == "429";
+}
+
 }  // namespace
 
 std::string ToIndexTimestamp(std::string_view time) {
@@ -445,13 +459,34 @@ std::optional<ArchivedResponse> WaczCollection::Lookup(
     return capture.url == asked_for;
   };
   const auto any = [](const CdxjEntry&) { return true; };
+
+  // And under each of those, for a page or a frame, a capture the site let the
+  // visitor into over a nearer one in which it turned them away (see
+  // TurnedAway()). A bot check answers 401 and reloads the page once it is
+  // satisfied; live, the reload is let in, but replayed it asks again at the
+  // same moment and would be given the same 401, and reload, without end.
+  // Under each, and not over them all: the page's own URL still comes first,
+  // since another URL filed under its key is as a rule a redirect to it.
+  const auto let_in_first =
+      [&](base::FunctionRef<const CdxjEntry*(Accept)> find,
+          Accept accept) -> const CdxjEntry* {
+    if (!request.accept_closest) {
+      if (const CdxjEntry* entry = find([&](const CdxjEntry& capture) {
+            return accept(capture) && !TurnedAway(capture);
+          })) {
+        return entry;
+      }
+    }
+    return find(accept);
+  };
+
   for (const std::string& key : keys) {
-    for (const CdxjEntry* entry :
-         {FindNearestCapture(index_, key, moment, whole_of_this_url),
-          FindNearestCapture(index_, key, moment, whole),
-          FindNearestCapture(index_, key, moment, any_of_this_url),
-          FindNearestCapture(index_, key, moment, any)}) {
-      if (entry) {
+    const auto nearest = [&](Accept accept) {
+      return FindNearestCapture(index_, key, moment, accept);
+    };
+    for (Accept accept : {Accept(whole_of_this_url), Accept(whole),
+                          Accept(any_of_this_url), Accept(any)}) {
+      if (const CdxjEntry* entry = let_in_first(nearest, accept)) {
         return Read(*entry);
       }
     }
@@ -460,15 +495,13 @@ std::optional<ArchivedResponse> WaczCollection::Lookup(
   // nearest, for a request any such capture may answer, and for one that
   // only its own may, a capture differing in what the load made for itself.
   for (const std::string& key : keys) {
-    for (const CdxjEntry* entry :
-         request.accept_closest
-             ? std::initializer_list<const CdxjEntry*>{
-                   FindClosestCapture(index_, key, moment, whole),
-                   FindClosestCapture(index_, key, moment, any)}
-             : std::initializer_list<const CdxjEntry*>{
-                   FindCaptureIgnoringVisitValues(index_, key, moment, whole),
-                   FindCaptureIgnoringVisitValues(index_, key, moment, any)}) {
-      if (entry) {
+    const auto closest = [&](Accept accept) {
+      return request.accept_closest
+                 ? FindClosestCapture(index_, key, moment, accept)
+                 : FindCaptureIgnoringVisitValues(index_, key, moment, accept);
+    };
+    for (Accept accept : {Accept(whole), Accept(any)}) {
+      if (const CdxjEntry* entry = let_in_first(closest, accept)) {
         return Read(*entry);
       }
     }

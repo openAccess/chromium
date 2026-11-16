@@ -446,6 +446,116 @@ TEST_F(WaczCollectionTest, AVisitToNoListedPageHasNoMoment) {
   EXPECT_EQ("", collection->LandingMoment(GURL("https://other.example/")));
 }
 
+// A bot check's reload, replayed, asks again at the moment it was refused.
+// Given the refusal again it would reload without end, so it is given the page
+// the site let the browser into, though that came later.
+TEST_F(WaczCollectionTest, APageIsAnsweredWhereTheSiteLetTheBrowserIn) {
+  const std::vector<std::string> refusals = {
+      "401 Unauthorized", "403 Forbidden", "429 Too Many Requests"};
+  for (const std::string& refusal : refusals) {
+    const std::string url = "https://example.org/" + refusal.substr(0, 3);
+    AddResponse(url, "20260101120020",
+                base::StrCat({"HTTP/1.1 ", refusal, "\r\n\r\n"}),
+                "checking your device");
+    AddResponse(url, "20260101120023", "HTTP/1.1 200 OK\r\n\r\n", "front page");
+  }
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  for (const std::string& refusal : refusals) {
+    SCOPED_TRACE(refusal);
+    std::optional<ArchivedResponse> page = collection->Lookup(
+        GURL("https://example.org/" + refusal.substr(0, 3)), "20260101120001");
+    ASSERT_TRUE(page.has_value());
+    EXPECT_EQ(200, page->headers->response_code());
+    EXPECT_EQ("front page", ToString(page->body));
+  }
+}
+
+// So is a page asked for in words of its own -- here a clock reading -- which
+// is answered by a capture differing only in those.
+TEST_F(WaczCollectionTest,
+       APageAskedAnewIsAnsweredWhereTheSiteLetTheBrowserIn) {
+  AddResponse("https://example.org/?t=1767268820", "20260101120020",
+              "HTTP/1.1 401 Unauthorized\r\n\r\n", "checking your device");
+  AddResponse("https://example.org/?t=1767268823", "20260101120023",
+              "HTTP/1.1 200 OK\r\n\r\n", "front page");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  std::optional<ArchivedResponse> page = collection->Lookup(
+      GURL("https://example.org/?t=1767268801"), "20260101120001");
+  ASSERT_TRUE(page.has_value());
+  EXPECT_EQ("front page", ToString(page->body));
+}
+
+// A page the site only ever refused is still what the capture holds of it.
+TEST_F(WaczCollectionTest, APageTheSiteOnlyRefusedIsServedAsRefused) {
+  AddResponse("https://example.org/", "20260101120020",
+              "HTTP/1.1 403 Forbidden\r\n\r\n", "go away");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  std::optional<ArchivedResponse> page =
+      collection->Lookup(GURL("https://example.org/"), "20260101120001");
+  ASSERT_TRUE(page.has_value());
+  EXPECT_EQ(403, page->headers->response_code());
+}
+
+// Only a refusal gives way. A page that was not there yet is what the site said
+// of it at that moment.
+TEST_F(WaczCollectionTest, APageThatWasNotThereIsServedAsNotThere) {
+  AddResponse("https://example.org/story", "20260101120020",
+              "HTTP/1.1 404 Not Found\r\n\r\n", "not yet");
+  AddResponse("https://example.org/story", "20260101120023",
+              "HTTP/1.1 200 OK\r\n\r\n", "published");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  std::optional<ArchivedResponse> page =
+      collection->Lookup(GURL("https://example.org/story"), "20260101120001");
+  ASSERT_TRUE(page.has_value());
+  EXPECT_EQ("not yet", ToString(page->body));
+}
+
+// What a page fetches is answered as it was told, refusal and all: a 401 from
+// an API before signing in is what the page went on from.
+TEST_F(WaczCollectionTest, WhatAPageFetchesIsAnsweredAsItWasTold) {
+  AddResponse("https://example.org/api/me", "20260101120020",
+              "HTTP/1.1 401 Unauthorized\r\n\r\n", "{}");
+  AddResponse("https://example.org/api/me", "20260101120023",
+              "HTTP/1.1 200 OK\r\n\r\n", "{\"name\": \"someone\"}");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  ReplayRequest request;
+  request.url = GURL("https://example.org/api/me");
+  request.accept_closest = true;
+  std::optional<ArchivedResponse> response =
+      collection->Lookup(request, "20260101120001");
+  ASSERT_TRUE(response.has_value());
+  EXPECT_EQ(401, response->headers->response_code());
+}
+
+// The page's own URL still comes first. Another URL filed under its key is as
+// a rule a redirect to it, and answering a refused page with that sends it
+// back to be refused: the same loop by another way.
+TEST_F(WaczCollectionTest, ARefusedPageIsNotAnsweredWithARedirectToItself) {
+  AddResponse("https://example.org/", "20260101120020",
+              "HTTP/1.1 301 Moved Permanently\r\n"
+              "Location: https://www.example.org/\r\n\r\n",
+              "");
+  AddResponse("https://www.example.org/", "20260101120020",
+              "HTTP/1.1 401 Unauthorized\r\n\r\n", "checking your device");
+
+  std::optional<WaczCollection> collection = Build();
+  ASSERT_TRUE(collection.has_value());
+  std::optional<ArchivedResponse> page =
+      collection->Lookup(GURL("https://www.example.org/"), "20260101120020");
+  ASSERT_TRUE(page.has_value());
+  EXPECT_EQ(401, page->headers->response_code());
+}
+
 // Asking what an archive holds is a smaller question than being ready to
 // answer for it: a browser has to know which URL to land on before it opens
 // the archive to serve, and reading the whole index to find that out would be

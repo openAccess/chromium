@@ -186,6 +186,14 @@ class WaczCollection {
   //
   // A capture of the whole resource is preferred to a nearer capture of part
   // of it -- a 206 -- which is served only where there is nothing else.
+  //
+  // A page or a frame is answered from a capture in which the site let the
+  // visitor in over a nearer one in which it turned them away: a 401, 403 or
+  // 429, a sign-in wall or a bot check. A bot check reloads the page once it
+  // is satisfied, and live the reload is let in; replayed, it asks again at
+  // the same moment, and given the same refusal would reload without end. A
+  // page the site only ever refused is served as refused, and anything else
+  // it said about a page -- a 404 above all -- as it said it.
   std::optional<ArchivedResponse> Lookup(const GURL& url,
                                          std::string_view timestamp);
 
@@ -220,9 +228,8 @@ class WaczCollection {
   // Not simply the first page at `url`, because a capture lists every page
   // the browser landed on, and some of those were the site turning a visitor
   // away for a moment -- a bot check that answers 401 and reloads the same
-  // URL once it is satisfied. Live, that is a step on the way in. Replayed,
-  // the reload asks again at the same moment and gets the same 401, so a
-  // visit begun there never gets in.
+  // URL once it is satisfied. Live, that is a step on the way in, and the
+  // visit is the page it let the browser into, at that page's time.
   std::string LandingMoment(const GURL& url) const;
 
   // Every entry in the index, sorted as the index is.
